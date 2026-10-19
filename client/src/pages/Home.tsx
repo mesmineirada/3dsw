@@ -686,15 +686,29 @@ export default function Home() {
     workbox.name = "workbox";
     scene.add(workbox);
 
-    const resize = () => {
+    let resizeFrame = 0;
+    let lastWidth = 0;
+    let lastHeight = 0;
+    const resize = (observedWidth?: number, observedHeight?: number) => {
       const bounds = canvas.parentElement?.getBoundingClientRect();
-      if (!bounds) return;
-      renderer.setSize(bounds.width, bounds.height, false);
-      camera.aspect = bounds.width / bounds.height;
-      camera.updateProjectionMatrix();
+      const width = Math.floor(observedWidth ?? bounds?.width ?? 0);
+      const height = Math.floor(observedHeight ?? bounds?.height ?? 0);
+      if (!width || !height || (width === lastWidth && height === lastHeight)) return;
+      lastWidth = width;
+      lastHeight = height;
+      if (resizeFrame) cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        renderer.setSize(width, height, false);
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+      });
     };
     resize();
-    const observer = new ResizeObserver(resize);
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      resize(rect?.width, rect?.height);
+    });
     observer.observe(canvas.parentElement ?? canvas);
 
     let animationFrame = 0;
@@ -706,6 +720,7 @@ export default function Home() {
     frame();
 
     return () => {
+      if (resizeFrame) cancelAnimationFrame(resizeFrame);
       cancelAnimationFrame(animationFrame);
       observer.disconnect();
       transform.dispose();
