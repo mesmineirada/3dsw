@@ -15,8 +15,15 @@
 - [x] A aplicação oferece união, subtração e interseção básicas entre sólidos selecionados.
 - [x] A aplicação permite desfazer e refazer as principais operações.
 
-## Impressão 3D
+## Fixação inteligente
+- [x] O usuário pode criar individualmente um conduto, um pino de trava ou uma contra-trava.
+- [x] A autoancoragem vincula o componente à peça-base e faz com que ele acompanhe seus movimentos.
+- [x] O autoclique cria o componente na face clicada e orienta sua direção pela normal da face.
+- [x] O botão de criação posiciona o componente no topo da peça selecionada.
+
+## Impressão 3D e execução offline
 - [x] A aplicação valida o volume de trabalho de até 300 × 300 × 300 mm.
 - [x] A aplicação exibe alertas visuais para objetos ou dimensões fora dos limites.
 - [x] A aplicação verifica o modelo antes de gerar o arquivo final.
 - [x] O usuário pode exportar o modelo final em STL para levar ao fatiador/impressora 3D.
+- [x] O projeto inclui versão compilada e servidor local para execução sem internet.

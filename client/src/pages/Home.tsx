@@ -51,6 +51,7 @@ const STORAGE_KEY = "modela3d-project";
 type ShapeType = "box" | "cylinder" | "sphere" | "cone" | "prism" | "boolean";
 type ToolMode = "translate" | "rotate" | "scale";
 type BooleanMode = "union" | "subtract" | "intersect";
+type ComponentRole = "conduit" | "lockPin" | "counterLock";
 type Vec3 = [number, number, number];
 
 type GeometryData = {
@@ -68,6 +69,8 @@ type ModelObject = {
   dimensions: Vec3;
   color: string;
   groupId?: string;
+  componentRole?: ComponentRole;
+  anchorTo?: string;
   visible: boolean;
   geometryData?: GeometryData;
 };
@@ -81,6 +84,18 @@ const typeLabels: Record<ShapeType, string> = {
   cone: "Cone",
   prism: "Prisma",
   boolean: "Sólido combinado",
+};
+
+const componentLabels: Record<ComponentRole, string> = {
+  conduit: "Conduto",
+  lockPin: "Pino de trava",
+  counterLock: "Contra-trava",
+};
+
+const componentColors: Record<ComponentRole, string> = {
+  conduit: "#f2c76e",
+  lockPin: "#ff8f9b",
+  counterLock: "#9e9bff",
 };
 
 const toolLabels: Record<ToolMode, string> = {
@@ -124,6 +139,36 @@ function createModel(
     color: COLORS[index % COLORS.length],
     visible: true,
   };
+}
+
+function componentHeight(role: ComponentRole) {
+  return role === "conduit" ? 42 : role === "lockPin" ? 28 : 18;
+}
+
+function createComponent(
+  role: ComponentRole,
+  host: ModelObject,
+  position: Vec3,
+  rotation: Vec3 = [0, 0, 0],
+): ModelObject {
+  const diameter = role === "conduit" ? 16 : role === "lockPin" ? 10 : 14;
+  return {
+    id: uid(),
+    name: `${componentLabels[role]} · ${host.name}`,
+    type: "cylinder",
+    position,
+    rotation,
+    scale: [1, 1, 1],
+    dimensions: [diameter, componentHeight(role), diameter],
+    color: componentColors[role],
+    componentRole: role,
+    anchorTo: host.id,
+    visible: true,
+  };
+}
+
+function modelLabel(model: ModelObject) {
+  return model.componentRole ? componentLabels[model.componentRole] : typeLabels[model.type];
 }
 
 function makeGeometry(model: ModelObject) {
@@ -298,6 +343,9 @@ export default function Home() {
   const [showGrid, setShowGrid] = useState(true);
   const [showAxes, setShowAxes] = useState(true);
   const [view, setView] = useState<"perspective" | "top">("perspective");
+  const [autoAnchor, setAutoAnchor] = useState(true);
+  const [autoClick, setAutoClick] = useState(false);
+  const [placementRole, setPlacementRole] = useState<ComponentRole>("conduit");
   const [, setTransformTick] = useState(0);
   const [saved, setSaved] = useState(false);
 
@@ -358,13 +406,25 @@ export default function Home() {
     commit(objectsRef.current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   }, [commit]);
 
+  const updatePositionWithAnchors = useCallback((id: string, nextPosition: Vec3) => {
+    const current = objectsRef.current.find((item) => item.id === id);
+    if (!current) return;
+    const delta = nextPosition.map((value, index) => value - current.position[index]) as Vec3;
+    commit(objectsRef.current.map((item) => {
+      if (item.id === id) return { ...item, position: nextPosition };
+      if (item.anchorTo !== id) return item;
+      return { ...item, position: item.position.map((value, index) => round(value + delta[index])) as Vec3 };
+    }));
+  }, [commit]);
+
   const updateVector = useCallback((id: string, key: "position" | "rotation" | "scale" | "dimensions", index: number, value: number) => {
     const current = objectsRef.current.find((item) => item.id === id);
     if (!current) return;
     const nextVector = [...current[key]] as Vec3;
     nextVector[index] = value;
-    updateModel(id, { [key]: nextVector } as Partial<ModelObject>);
-  }, [updateModel]);
+    if (key === "position") updatePositionWithAnchors(id, nextVector);
+    else updateModel(id, { [key]: nextVector } as Partial<ModelObject>);
+  }, [updateModel, updatePositionWithAnchors]);
 
   const addPrimitive = useCallback((type: Exclude<ShapeType, "boolean">) => {
     const next = createModel(type, objectsRef.current.length);
@@ -372,6 +432,26 @@ export default function Home() {
     setSelectedIds([next.id]);
     toast.success(`${typeLabels[type]} adicionado`);
   }, [commit]);
+
+  const anchorPosition = useCallback((host: ModelObject, role: ComponentRole): Vec3 => {
+    const bounds = worldBounds(host);
+    const center = bounds.getCenter(new THREE.Vector3());
+    return [round(center.x), round(bounds.max.y + componentHeight(role) / 2), round(center.z)];
+  }, []);
+
+  const addComponentForHost = useCallback((role: ComponentRole, hostId: string | undefined, position?: Vec3, rotation: Vec3 = [0, 0, 0], shouldAnchor = autoAnchor) => {
+    if (!hostId) {
+      toast.info("Selecione uma peça-base antes de adicionar a fixação");
+      return;
+    }
+    const host = objectsRef.current.find((item) => item.id === hostId);
+    if (!host) return;
+    const component = createComponent(role, host, position ?? anchorPosition(host, role), rotation);
+    if (!shouldAnchor) delete component.anchorTo;
+    commit([...objectsRef.current, component]);
+    setSelectedIds([component.id]);
+    toast.success(`${componentLabels[role]} criado individualmente`);
+  }, [anchorPosition, autoAnchor, commit]);
 
   const deleteSelection = useCallback(() => {
     if (!selectedIds.length) return;
@@ -565,11 +645,17 @@ export default function Home() {
       const activeGroup = transform.object as THREE.Group | undefined;
       const id = activeGroup?.userData.modelId as string | undefined;
       if (!id || !activeGroup) return;
+      const previous = objectsRef.current.find((item) => item.id === id);
+      const nextPosition: Vec3 = [round(activeGroup.position.x), round(activeGroup.position.y), round(activeGroup.position.z)];
+      const delta = previous ? nextPosition.map((value, index) => value - previous.position[index]) as Vec3 : [0, 0, 0];
       objectsRef.current = objectsRef.current.map((item) => item.id === id ? {
         ...item,
-        position: [round(activeGroup.position.x), round(activeGroup.position.y), round(activeGroup.position.z)],
+        position: nextPosition,
         rotation: [round(THREE.MathUtils.radToDeg(activeGroup.rotation.x)), round(THREE.MathUtils.radToDeg(activeGroup.rotation.y)), round(THREE.MathUtils.radToDeg(activeGroup.rotation.z))],
         scale: [round(activeGroup.scale.x), round(activeGroup.scale.y), round(activeGroup.scale.z)],
+      } : item.anchorTo === id ? {
+        ...item,
+        position: item.position.map((value, index) => round(value + delta[index])) as Vec3,
       } : item);
       setTransformTick((value) => value + 1);
       if (selectionHelperRef.current) selectionHelperRef.current.update();
@@ -712,7 +798,26 @@ export default function Home() {
     raycasterRef.current.setFromCamera(pointerRef.current, camera);
     const hits = raycasterRef.current.intersectObjects([...meshMapRef.current.values()], true);
     const hit = hits.find((entry) => entry.object.userData.modelId);
+    if (autoClick && hit) {
+      const hostId = hit.object.userData.modelId as string;
+      const normal = (hit.face?.normal.clone() ?? new THREE.Vector3(0, 1, 0))
+        .transformDirection(hit.object.matrixWorld)
+        .normalize();
+      const point = hit.point.clone().add(normal.clone().multiplyScalar(componentHeight(placementRole) / 2));
+      const rotation = new THREE.Euler().setFromQuaternion(
+        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal),
+      );
+      addComponentForHost(
+        placementRole,
+        hostId,
+        [round(point.x), round(point.y), round(point.z)],
+        [round(THREE.MathUtils.radToDeg(rotation.x)), round(THREE.MathUtils.radToDeg(rotation.y)), round(THREE.MathUtils.radToDeg(rotation.z))],
+        autoAnchor,
+      );
+      return;
+    }
     if (!hit) {
+      if (autoClick) toast.info("Clique diretamente em uma face da peça para ancorar o componente");
       if (!event.shiftKey) setSelectedIds([]);
       return;
     }
@@ -798,6 +903,18 @@ export default function Home() {
             <button onClick={deleteSelection} disabled={!selectedIds.length} className="danger-action"><Trash2 size={16} /><span>Excluir</span></button>
           </div>
 
+          <div className="rail-divider" />
+          <div className="rail-heading"><span>Fixação inteligente</span><Sparkles size={14} /></div>
+          <div className="fixation-card">
+            <div className="fixation-label">Componente individual</div>
+            <div className="role-selector">
+              {(Object.keys(componentLabels) as ComponentRole[]).map((role) => <button key={role} className={placementRole === role ? "active" : ""} onClick={() => setPlacementRole(role)}>{componentLabels[role]}</button>)}
+            </div>
+            <button className={`toggle-row ${autoAnchor ? "on" : ""}`} onClick={() => setAutoAnchor((value) => !value)}><span className="toggle-dot" /><span><strong>Autoancoragem</strong><small>Vincula à peça selecionada</small></span><b>{autoAnchor ? "ON" : "OFF"}</b></button>
+            <button className={`toggle-row ${autoClick ? "on" : ""}`} onClick={() => setAutoClick((value) => !value)}><span className="toggle-dot" /><span><strong>Autoclique</strong><small>Clique em uma face para posicionar</small></span><b>{autoClick ? "ON" : "OFF"}</b></button>
+            <button className="anchor-action" onClick={() => addComponentForHost(placementRole, activeId)} disabled={!activeId}><Plus size={14} /> Adicionar na peça selecionada</button>
+          </div>
+
           <div className="rail-footer">
             <div className="legend-row"><span className="legend-dot green" /> Dentro do limite</div>
             <div className="legend-row"><span className="legend-dot amber" /> Revisar antes de exportar</div>
@@ -819,7 +936,7 @@ export default function Home() {
           </div>
           <div className="viewport-stage">
             <canvas ref={canvasRef} onPointerDown={handleCanvasPointer} />
-            <div className="viewport-hint"><span>Arraste</span> para orbitar · <span>Shift + clique</span> para selecionar mais de um</div>
+            <div className="viewport-hint">{autoClick ? <><span>Autoclique ativo:</span> clique em uma face para criar {componentLabels[placementRole].toLowerCase()}</> : <><span>Arraste</span> para orbitar · <span>Shift + clique</span> para selecionar mais de um</>}</div>
             <div className="axis-labels"><span className="axis-x">X</span><span className="axis-y">Y</span><span className="axis-z">Z</span></div>
             <div className="work-size"><span>ÁREA ÚTIL</span><strong>300 × 300 × 300</strong><small>milímetros</small></div>
           </div>
@@ -836,7 +953,7 @@ export default function Home() {
           <section className="inspector-section">
             <div className="section-title"><span>Seleção</span><span className="count-pill">{selectedIds.length}</span></div>
             {active ? <>
-              <div className="object-title"><span className="object-swatch" style={{ background: active.color }} /><div><strong>{active.name}</strong><small>{typeLabels[active.type]}{active.groupId ? " · Grupo" : ""}</small></div><button className="visibility-button" onClick={() => updateModel(active.id, { visible: !active.visible })}>{active.visible ? <Eye size={15} /> : <EyeOff size={15} />}</button></div>
+              <div className="object-title"><span className="object-swatch" style={{ background: active.color }} /><div><strong>{active.name}</strong><small>{modelLabel(active)}{active.anchorTo ? " · Ancorado" : active.groupId ? " · Grupo" : ""}</small></div><button className="visibility-button" onClick={() => updateModel(active.id, { visible: !active.visible })}>{active.visible ? <Eye size={15} /> : <EyeOff size={15} />}</button></div>
               <div className="inspector-actions"><button onClick={duplicateSelection}><Copy size={14} /> Duplicar</button><button onClick={() => mirrorSelection(0)}><span className="mirror-icon">↔</span> Espelhar X</button></div>
             </> : <div className="empty-inspector"><BoxSelect size={19} /><span>Selecione um objeto na cena<br />ou na lista abaixo.</span></div>}
           </section>
@@ -875,7 +992,7 @@ export default function Home() {
           <section className="inspector-section object-list-section">
             <div className="section-title"><span>Objetos na cena</span><span className="unit-label">{objects.length}</span></div>
             <div className="object-list">
-              {objects.map((item) => <button key={item.id} className={`object-row ${selectedIds.includes(item.id) ? "active" : ""}`} onClick={(event) => setSelectedIds((current) => event.shiftKey ? current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id] : [item.id])}><span className="object-swatch" style={{ background: item.color }} /><span className="object-row-copy"><strong>{item.name}</strong><small>{item.dimensions.join(" × ")} mm</small></span><span className={invalidIds.has(item.id) ? "object-alert" : "object-check"}>{invalidIds.has(item.id) ? "!" : "✓"}</span></button>)}
+              {objects.map((item) => <button key={item.id} className={`object-row ${selectedIds.includes(item.id) ? "active" : ""}`} onClick={(event) => setSelectedIds((current) => event.shiftKey ? current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id] : [item.id])}><span className="object-swatch" style={{ background: item.color }} /><span className="object-row-copy"><strong>{item.name}</strong><small>{modelLabel(item)} · {item.dimensions.join(" × ")} mm{item.anchorTo ? " · ancorado" : ""}</small></span><span className={invalidIds.has(item.id) ? "object-alert" : "object-check"}>{invalidIds.has(item.id) ? "!" : "✓"}</span></button>)}
             </div>
           </section>
         </aside>
