@@ -198,6 +198,9 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .toggle-row.on b { color: var(--teal); }
 .anchor-action { height: 30px; display: flex; align-items: center; justify-content: center; gap: 6px; color: #0b1b20; background: var(--teal); border-radius: 5px; font-size: 9px; font-weight: 800; }
 .anchor-action:hover { background: #83ecd1; }
+.pair-action { height: 30px; display: flex; align-items: center; justify-content: center; gap: 6px; color: #171329; background: #b6a5ff; border-radius: 5px; font-size: 9px; font-weight: 800; }
+.pair-action:hover { background: #cec4ff; }
+.pair-hint { color: #748895; font-family: "DM Mono", monospace; font-size: 8px; line-height: 1.35; }
 
 .modeling-tools { margin-top: 5px; padding: 6px 0; border-top: 1px solid rgba(162, 189, 205, .08); border-bottom: 1px solid rgba(162, 189, 205, .08); }
 .modeling-tools button { color: #a8b9c3; }

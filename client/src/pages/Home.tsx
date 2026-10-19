@@ -90,8 +90,8 @@ const typeLabels: Record<ShapeType, string> = {
 
 const componentLabels: Record<ComponentRole, string> = {
   conduit: "Conduto",
-  lockPin: "Pino de trava",
-  counterLock: "Contra-trava",
+  lockPin: "Pino macho",
+  counterLock: "Trava fêmea",
 };
 
 const componentColors: Record<ComponentRole, string> = {
@@ -173,6 +173,48 @@ function modelLabel(model: ModelObject) {
   return model.componentRole ? componentLabels[model.componentRole] : typeLabels[model.type];
 }
 
+function makeTubeGeometry(outerRadius: number, height: number, wall: number) {
+  const segments = 48;
+  const innerRadius = Math.max(outerRadius - wall, outerRadius * 0.35);
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = (index / segments) * Math.PI * 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    positions.push(
+      cos * outerRadius, -height / 2, sin * outerRadius,
+      cos * outerRadius, height / 2, sin * outerRadius,
+      cos * innerRadius, -height / 2, sin * innerRadius,
+      cos * innerRadius, height / 2, sin * innerRadius,
+    );
+  }
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % segments;
+    const outerBottom = index * 4;
+    const outerTop = outerBottom + 1;
+    const innerBottom = outerBottom + 2;
+    const innerTop = outerBottom + 3;
+    const nextOuterBottom = next * 4;
+    const nextOuterTop = nextOuterBottom + 1;
+    const nextInnerBottom = nextOuterBottom + 2;
+    const nextInnerTop = nextOuterBottom + 3;
+    indices.push(
+      outerBottom, nextOuterBottom, outerTop, nextOuterBottom, nextOuterTop, outerTop,
+      innerBottom, innerTop, nextInnerBottom, nextInnerBottom, innerTop, nextInnerTop,
+      outerTop, nextOuterTop, innerTop, nextOuterTop, nextInnerTop, innerTop,
+      outerBottom, innerBottom, nextOuterBottom, nextOuterBottom, innerBottom, nextInnerBottom,
+    );
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 function makeGeometry(model: ModelObject) {
   if (model.type === "boolean" && model.geometryData) {
     const geometry = new THREE.BufferGeometry();
@@ -190,6 +232,9 @@ function makeGeometry(model: ModelObject) {
   }
 
   const [width, height, depth] = model.dimensions;
+  if (model.componentRole === "counterLock") {
+    return makeTubeGeometry(width / 2, height, Math.min(2.2, width / 5));
+  }
   switch (model.type) {
     case "cylinder":
       return new THREE.CylinderGeometry(width / 2, width / 2, height, 48);
@@ -354,6 +399,7 @@ export default function Home() {
   const [placementRole, setPlacementRole] = useState<ComponentRole>("conduit");
   const [pushPullAmount, setPushPullAmount] = useState(10);
   const [wallThickness, setWallThickness] = useState(3);
+  const [filletPercent, setFilletPercent] = useState(20);
   const [, setTransformTick] = useState(0);
   const [saved, setSaved] = useState(false);
 
@@ -464,10 +510,11 @@ export default function Home() {
       return;
     }
     const maxRadius = Math.max(0, Math.min(...active.dimensions) / 2 - 0.1);
-    const radius = active.filletRadius && active.filletRadius > 0 ? active.filletRadius : Math.min(6, maxRadius);
-    updateModel(active.id, { filletRadius: round(Math.min(radius, maxRadius)) });
-    toast.success(`Bordas arredondadas com raio de ${round(Math.min(radius, maxRadius))} mm`);
-  }, [active, updateModel]);
+    const percent = Math.min(100, Math.max(0, filletPercent));
+    const radius = round(maxRadius * (percent / 100));
+    updateModel(active.id, { filletRadius: radius });
+    toast.success(`Bordas arredondadas em ${round(percent)}% · raio de ${radius} mm`);
+  }, [active, filletPercent, updateModel]);
 
   const applyHollow = useCallback(() => {
     if (!active) {
@@ -542,6 +589,28 @@ export default function Home() {
     setSelectedIds([component.id]);
     toast.success(`${componentLabels[role]} criado individualmente`);
   }, [anchorPosition, autoAnchor, commit]);
+
+  const addLockPair = useCallback(() => {
+    const hosts = selectedIds.slice(0, 2).map((id) => objectsRef.current.find((item) => item.id === id)).filter(Boolean) as ModelObject[];
+    if (!hosts.length) {
+      toast.info("Selecione uma ou duas peças para criar o par macho/fêmea");
+      return;
+    }
+    if (hosts.some((item) => item.type === "boolean")) {
+      toast.info("Escolha peças primitivas para criar pinos de encaixe");
+      return;
+    }
+    const maleHost = hosts[0];
+    const malePosition = anchorPosition(maleHost, "lockPin");
+    const femaleHost = hosts[1] ?? maleHost;
+    const femalePosition = anchorPosition(femaleHost, "counterLock");
+    if (!hosts[1]) femalePosition[0] = round(femalePosition[0] + maleHost.dimensions[0] / 2 + 12);
+    const male = createComponent("lockPin", maleHost, malePosition);
+    const female = createComponent("counterLock", femaleHost, femalePosition);
+    commit([...objectsRef.current, male, female]);
+    setSelectedIds([male.id, female.id]);
+    toast.success("Par macho/fêmea criado com folga de encaixe");
+  }, [anchorPosition, commit, selectedIds]);
 
   const deleteSelection = useCallback(() => {
     if (!selectedIds.length) return;
@@ -1032,6 +1101,8 @@ export default function Home() {
             <button className={`toggle-row ${autoAnchor ? "on" : ""}`} onClick={() => setAutoAnchor((value) => !value)}><span className="toggle-dot" /><span><strong>Autoancoragem</strong><small>Vincula à peça selecionada</small></span><b>{autoAnchor ? "ON" : "OFF"}</b></button>
             <button className={`toggle-row ${autoClick ? "on" : ""}`} onClick={() => setAutoClick((value) => !value)}><span className="toggle-dot" /><span><strong>Autoclique</strong><small>Clique em uma face para posicionar</small></span><b>{autoClick ? "ON" : "OFF"}</b></button>
             <button className="anchor-action" onClick={() => addComponentForHost(placementRole, activeId)} disabled={!activeId}><Plus size={14} /> Adicionar na peça selecionada</button>
+            <button className="pair-action" onClick={addLockPair} disabled={!activeId}><Plus size={14} /> Criar par macho / fêmea</button>
+            <small className="pair-hint">Selecione duas peças para colocar um lado em cada uma.</small>
           </div>
 
           <div className="rail-footer">
@@ -1092,6 +1163,8 @@ export default function Home() {
             <Field label="Valor" value={pushPullAmount} suffix="mm" disabled={!active} onChange={setPushPullAmount} />
             <div className="sub-heading"><span>Espessura da parede</span><span>vazar</span></div>
             <Field label="Parede" value={wallThickness} suffix="mm" disabled={!active} onChange={setWallThickness} />
+            <div className="sub-heading"><span>Concordância</span><span>percentual</span></div>
+            <Field label="Arredondamento" value={filletPercent} suffix="%" disabled={!active || active.type !== "box"} onChange={setFilletPercent} />
             <div className="inspector-actions modeling-actions">
               <button onClick={applyPushPull} disabled={!active}><Move3d size={14} /> Aplicar</button>
               <button onClick={applyFillet} disabled={!active || active.type !== "box"}><Circle size={14} /> Concordância</button>
