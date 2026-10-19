@@ -9,6 +9,7 @@ import Home from "./pages/Home";
 function Router() {
   // make sure to consider if you need authentication for certain routes
   const routerBase = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
+  if (import.meta.env.BASE_URL !== "/") return <Home />;
   return (
     <WouterRouter base={routerBase}>
       <Switch>
