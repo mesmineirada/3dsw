@@ -158,6 +158,25 @@ function makeGeometry(model: ModelObject) {
   }
 }
 
+function modelMatrix(model: ModelObject) {
+  return new THREE.Matrix4().compose(
+    new THREE.Vector3(...model.position),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(
+      THREE.MathUtils.degToRad(model.rotation[0]),
+      THREE.MathUtils.degToRad(model.rotation[1]),
+      THREE.MathUtils.degToRad(model.rotation[2]),
+    )),
+    new THREE.Vector3(...model.scale),
+  );
+}
+
+function worldBounds(model: ModelObject) {
+  const geometry = makeGeometry(model);
+  geometry.applyMatrix4(modelMatrix(model));
+  geometry.computeBoundingBox();
+  return geometry.boundingBox ?? new THREE.Box3();
+}
+
 function geometryForBrush(model: ModelObject) {
   const geometry = makeGeometry(model);
   const brush = new Brush(geometry, new THREE.MeshStandardMaterial({ color: model.color }));
@@ -286,6 +305,21 @@ export default function Home() {
     objectsRef.current = objects;
   }, [objects]);
 
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) return;
+      const restored = JSON.parse(stored) as ModelObject[];
+      if (!Array.isArray(restored) || restored.length === 0) return;
+      setObjects(restored);
+      setSelectedIds([restored[0].id]);
+      setSaved(true);
+      toast.success("Projeto salvo restaurado");
+    } catch {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  }, []);
+
   const activeId = selectedIds[0];
   const active = objects.find((item) => item.id === activeId);
   const activeDimensions = active?.dimensions ?? [0, 0, 0];
@@ -297,9 +331,8 @@ export default function Home() {
     return new Set(
       objects
         .filter((item) => {
-          const [x, y, z] = item.dimensions.map((value, index) => Math.abs(value * item.scale[index]));
-          const [px, py, pz] = item.position.map(Math.abs);
-          return px + x / 2 > LIMIT / 2 || py + y / 2 > LIMIT / 2 || pz + z / 2 > LIMIT / 2 || x > LIMIT || y > LIMIT || z > LIMIT;
+          const bounds = worldBounds(item);
+          return bounds.min.x < -LIMIT / 2 || bounds.max.x > LIMIT / 2 || bounds.min.y < -LIMIT / 2 || bounds.max.y > LIMIT / 2 || bounds.min.z < -LIMIT / 2 || bounds.max.z > LIMIT / 2;
         })
         .map((item) => item.id),
     );
@@ -445,20 +478,19 @@ export default function Home() {
     }
     const exportGroup = new THREE.Group();
     objectsRef.current.forEach((model) => {
-      const geometry = makeGeometry(model);
-      geometry.applyMatrix4(new THREE.Matrix4().compose(
-        new THREE.Vector3(...model.position),
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(
-          THREE.MathUtils.degToRad(model.rotation[0]),
-          THREE.MathUtils.degToRad(model.rotation[1]),
-          THREE.MathUtils.degToRad(model.rotation[2]),
-        )),
-        new THREE.Vector3(...model.scale),
-      ));
+      if (!model.visible) return;
+      const geometry = makeGeometry(model).toNonIndexed();
+      geometry.applyMatrix4(modelMatrix(model));
+      geometry.deleteAttribute("uv");
       geometry.computeVertexNormals();
       exportGroup.add(new THREE.Mesh(geometry));
     });
-    const merged = mergeGeometries(exportGroup.children.map((child) => (child as THREE.Mesh).geometry), false);
+    const sourceGeometries = exportGroup.children.map((child) => (child as THREE.Mesh).geometry);
+    if (sourceGeometries.length === 0) {
+      toast.error("Ative pelo menos um objeto antes de exportar");
+      return;
+    }
+    const merged = mergeGeometries(sourceGeometries, false);
     if (!merged) {
       toast.error("Não foi possível unir as geometrias para exportação");
       return;
@@ -579,14 +611,16 @@ export default function Home() {
     const observer = new ResizeObserver(resize);
     observer.observe(canvas.parentElement ?? canvas);
 
+    let animationFrame = 0;
     const frame = () => {
       orbit.update();
       renderer.render(scene, camera);
-      requestAnimationFrame(frame);
+      animationFrame = requestAnimationFrame(frame);
     };
     frame();
 
     return () => {
+      cancelAnimationFrame(animationFrame);
       observer.disconnect();
       transform.dispose();
       orbit.dispose();
@@ -594,6 +628,18 @@ export default function Home() {
       scene.clear();
     };
   }, [snapshot]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key.toLowerCase() === "w") setTool("translate");
+      if (event.key.toLowerCase() === "e") setTool("rotate");
+      if (event.key.toLowerCase() === "r") setTool("scale");
+      if (event.key === "Delete" || event.key === "Backspace") deleteSelection();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteSelection]);
 
   useEffect(() => {
     const scene = sceneRef.current;
