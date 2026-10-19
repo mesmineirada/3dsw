@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
   ADDITION,
@@ -71,6 +72,7 @@ type ModelObject = {
   groupId?: string;
   componentRole?: ComponentRole;
   anchorTo?: string;
+  filletRadius?: number;
   visible: boolean;
   geometryData?: GeometryData;
 };
@@ -199,6 +201,10 @@ function makeGeometry(model: ModelObject) {
       return new THREE.CylinderGeometry(width / 2, width / 2, height, 6);
     case "box":
     default:
+      if (model.filletRadius && model.filletRadius > 0) {
+        const radius = Math.min(model.filletRadius, Math.max(0, Math.min(width, height, depth) / 2 - 0.1));
+        return new RoundedBoxGeometry(width, height, depth, 5, radius);
+      }
       return new THREE.BoxGeometry(width, height, depth);
   }
 }
@@ -346,6 +352,7 @@ export default function Home() {
   const [autoAnchor, setAutoAnchor] = useState(true);
   const [autoClick, setAutoClick] = useState(false);
   const [placementRole, setPlacementRole] = useState<ComponentRole>("conduit");
+  const [pushPullAmount, setPushPullAmount] = useState(10);
   const [, setTransformTick] = useState(0);
   const [saved, setSaved] = useState(false);
 
@@ -425,6 +432,41 @@ export default function Home() {
     if (key === "position") updatePositionWithAnchors(id, nextVector);
     else updateModel(id, { [key]: nextVector } as Partial<ModelObject>);
   }, [updateModel, updatePositionWithAnchors]);
+
+  const applyPushPull = useCallback(() => {
+    if (!active) {
+      toast.info("Selecione uma peça para usar Puxar/empurrar");
+      return;
+    }
+    if (active.type === "boolean") {
+      toast.info("Puxar/empurrar funciona em peças primitivas");
+      return;
+    }
+    const nextHeight = Math.max(1, round(active.dimensions[1] + pushPullAmount));
+    const heightDelta = (nextHeight - active.dimensions[1]) / 2;
+    const nextPosition: Vec3 = [active.position[0], round(active.position[1] + heightDelta), active.position[2]];
+    commit(objectsRef.current.map((item) => {
+      if (item.id === active.id) return { ...item, dimensions: [item.dimensions[0], nextHeight, item.dimensions[2]] as Vec3, position: nextPosition };
+      if (item.anchorTo !== active.id) return item;
+      return { ...item, position: item.position.map((value, index) => round(value + (index === 1 ? heightDelta : 0))) as Vec3 };
+    }));
+    toast.success(`${pushPullAmount >= 0 ? "Puxado" : "Empurrado"} ${Math.abs(pushPullAmount)} mm`);
+  }, [active, commit, pushPullAmount]);
+
+  const applyFillet = useCallback(() => {
+    if (!active) {
+      toast.info("Selecione um cubo para aplicar concordância");
+      return;
+    }
+    if (active.type !== "box") {
+      toast.info("A concordância nesta versão funciona em cubos");
+      return;
+    }
+    const maxRadius = Math.max(0, Math.min(...active.dimensions) / 2 - 0.1);
+    const radius = active.filletRadius && active.filletRadius > 0 ? active.filletRadius : Math.min(6, maxRadius);
+    updateModel(active.id, { filletRadius: round(Math.min(radius, maxRadius)) });
+    toast.success(`Bordas arredondadas com raio de ${round(Math.min(radius, maxRadius))} mm`);
+  }, [active, updateModel]);
 
   const addPrimitive = useCallback((type: Exclude<ShapeType, "boolean">) => {
     const next = createModel(type, objectsRef.current.length);
@@ -532,6 +574,14 @@ export default function Home() {
       toast.error("Não foi possível calcular essa operação com os sólidos atuais");
     }
   }, [commit, selectedIds]);
+
+  const cutSelection = useCallback(() => {
+    if (selectedIds.length !== 2) {
+      toast.info("Selecione a peça e depois o sólido de corte");
+      return;
+    }
+    applyBoolean("subtract");
+  }, [applyBoolean, selectedIds.length]);
 
   const undo = useCallback(() => {
     const previous = historyRef.current.pop();
@@ -899,7 +949,7 @@ export default function Home() {
           <div className="rail-divider" />
           <div className="rail-heading"><span>Ferramentas</span><Settings2 size={14} /></div>
           <div className="tool-stack">
-            <button className={tool === "translate" ? "selected" : ""} onClick={() => setTool("translate")}><Move3d size={17} /><span>Mover</span><kbd>W</kbd></button>
+            <button className={tool === "translate" ? "selected" : ""} onClick={() => setTool("translate")}><Move3d size={17} /><span>Mover peça</span><kbd>W</kbd></button>
             <button className={tool === "rotate" ? "selected" : ""} onClick={() => setTool("rotate")}><Rotate3d size={17} /><span>Rotacionar</span><kbd>E</kbd></button>
             <button className={tool === "scale" ? "selected" : ""} onClick={() => setTool("scale")}><Maximize2 size={17} /><span>Escalar</span><kbd>R</kbd></button>
           </div>
@@ -910,6 +960,11 @@ export default function Home() {
             <button onClick={() => applyBoolean("union")} disabled={selectedIds.length !== 2}><span className="op-symbol">∪</span><small>União</small></button>
             <button onClick={() => applyBoolean("subtract")} disabled={selectedIds.length !== 2}><span className="op-symbol">−</span><small>Subtrair</small></button>
             <button onClick={() => applyBoolean("intersect")} disabled={selectedIds.length !== 2}><span className="op-symbol">∩</span><small>Interseção</small></button>
+          </div>
+          <div className="tool-stack compact modeling-tools">
+            <button onClick={cutSelection} disabled={selectedIds.length !== 2}><Scissors size={16} /><span>Recortar</span></button>
+            <button onClick={applyPushPull} disabled={!active}><Move3d size={16} /><span>Puxar / empurrar</span></button>
+            <button onClick={applyFillet} disabled={!active}><Circle size={16} /><span>Arredondar bordas</span></button>
           </div>
           <div className="tool-stack compact">
             <button onClick={duplicateSelection} disabled={!selectedIds.length}><Copy size={16} /><span>Duplicar</span></button>
@@ -980,6 +1035,17 @@ export default function Home() {
               <Field label="Altura" value={activeDimensions[1]} disabled={!active} onChange={(value) => active && updateVector(active.id, "dimensions", 1, Math.max(1, value))} />
               <Field label="Profundidade" value={activeDimensions[2]} disabled={!active} onChange={(value) => active && updateVector(active.id, "dimensions", 2, Math.max(1, value))} />
             </div>
+          </section>
+
+          <section className="inspector-section modeling-section">
+            <div className="section-title"><span>Modelagem direta</span><span className="unit-label">mm</span></div>
+            <div className="sub-heading"><span>Puxar (+) / empurrar (−)</span><span>altura</span></div>
+            <Field label="Valor" value={pushPullAmount} suffix="mm" disabled={!active} onChange={setPushPullAmount} />
+            <div className="inspector-actions modeling-actions">
+              <button onClick={applyPushPull} disabled={!active}><Move3d size={14} /> Aplicar</button>
+              <button onClick={applyFillet} disabled={!active || active.type !== "box"}><Circle size={14} /> Concordância</button>
+            </div>
+            {active?.type === "box" && <div className="fillet-readout">Raio atual: <strong>{round(active.filletRadius ?? 0)} mm</strong></div>}
           </section>
 
           <section className="inspector-section">

@@ -198,3 +198,14 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .toggle-row.on b { color: var(--teal); }
 .anchor-action { height: 30px; display: flex; align-items: center; justify-content: center; gap: 6px; color: #0b1b20; background: var(--teal); border-radius: 5px; font-size: 9px; font-weight: 800; }
 .anchor-action:hover { background: #83ecd1; }
+
+.modeling-tools { margin-top: 5px; padding: 6px 0; border-top: 1px solid rgba(162, 189, 205, .08); border-bottom: 1px solid rgba(162, 189, 205, .08); }
+.modeling-tools button { color: #a8b9c3; }
+.modeling-tools button:hover { color: var(--teal); background: rgba(99, 226, 192, .09); }
+.modeling-tools button svg { color: var(--amber); }
+.modeling-section { background: rgba(99, 226, 192, .025); }
+.modeling-actions { margin-top: 9px; }
+.modeling-actions button:first-child { color: var(--teal); }
+.modeling-actions button:last-child { color: var(--amber); }
+.fillet-readout { margin-top: 8px; color: #738794; font-family: "DM Mono", monospace; font-size: 8px; }
+.fillet-readout strong { color: #f2c76e; font-weight: 500; }
