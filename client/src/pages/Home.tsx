@@ -353,6 +353,7 @@ export default function Home() {
   const [autoClick, setAutoClick] = useState(false);
   const [placementRole, setPlacementRole] = useState<ComponentRole>("conduit");
   const [pushPullAmount, setPushPullAmount] = useState(10);
+  const [wallThickness, setWallThickness] = useState(3);
   const [, setTransformTick] = useState(0);
   const [saved, setSaved] = useState(false);
 
@@ -467,6 +468,53 @@ export default function Home() {
     updateModel(active.id, { filletRadius: round(Math.min(radius, maxRadius)) });
     toast.success(`Bordas arredondadas com raio de ${round(Math.min(radius, maxRadius))} mm`);
   }, [active, updateModel]);
+
+  const applyHollow = useCallback(() => {
+    if (!active) {
+      toast.info("Selecione uma peça para usar Vazar");
+      return;
+    }
+    if (active.type === "boolean") {
+      toast.info("Vazar funciona em peças primitivas nesta versão");
+      return;
+    }
+    const maxThickness = Math.min(...active.dimensions) / 2 - 0.2;
+    if (maxThickness <= 0) {
+      toast.error("A peça é pequena demais para criar uma parede interna");
+      return;
+    }
+    const thickness = Math.min(Math.max(0.2, wallThickness), maxThickness);
+    const inner: ModelObject = {
+      ...active,
+      id: uid(),
+      name: `${active.name} · núcleo removido`,
+      dimensions: active.dimensions.map((value) => Math.max(0.4, value - thickness * 2)) as Vec3,
+      filletRadius: active.filletRadius ? Math.max(0, active.filletRadius - thickness) : 0,
+    };
+    try {
+      const evaluator = new Evaluator();
+      const result = evaluator.evaluate(geometryForBrush(active), geometryForBrush(inner), SUBTRACTION);
+      const serialized = serializeWorldGeometry(result.geometry, result.matrixWorld);
+      const shell: ModelObject = {
+        id: uid(),
+        name: `Vazado · ${active.name}`,
+        type: "boolean",
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        scale: [1, 1, 1],
+        dimensions: serialized.dimensions,
+        color: active.color,
+        visible: true,
+        geometryData: serialized.data,
+      };
+      commit([...objectsRef.current.filter((item) => item.id !== active.id), shell]);
+      setSelectedIds([shell.id]);
+      toast.success(`Peça vazada com parede de ${round(thickness)} mm`);
+    } catch (error) {
+      console.error(error);
+      toast.error("Não foi possível criar a parede interna desta peça");
+    }
+  }, [active, commit, wallThickness]);
 
   const addPrimitive = useCallback((type: Exclude<ShapeType, "boolean">) => {
     const next = createModel(type, objectsRef.current.length);
@@ -965,6 +1013,7 @@ export default function Home() {
             <button onClick={cutSelection} disabled={selectedIds.length !== 2}><Scissors size={16} /><span>Recortar</span></button>
             <button onClick={applyPushPull} disabled={!active}><Move3d size={16} /><span>Puxar / empurrar</span></button>
             <button onClick={applyFillet} disabled={!active}><Circle size={16} /><span>Arredondar bordas</span></button>
+            <button onClick={applyHollow} disabled={!active}><Shapes size={16} /><span>Vazar</span></button>
           </div>
           <div className="tool-stack compact">
             <button onClick={duplicateSelection} disabled={!selectedIds.length}><Copy size={16} /><span>Duplicar</span></button>
@@ -1041,10 +1090,13 @@ export default function Home() {
             <div className="section-title"><span>Modelagem direta</span><span className="unit-label">mm</span></div>
             <div className="sub-heading"><span>Puxar (+) / empurrar (−)</span><span>altura</span></div>
             <Field label="Valor" value={pushPullAmount} suffix="mm" disabled={!active} onChange={setPushPullAmount} />
+            <div className="sub-heading"><span>Espessura da parede</span><span>vazar</span></div>
+            <Field label="Parede" value={wallThickness} suffix="mm" disabled={!active} onChange={setWallThickness} />
             <div className="inspector-actions modeling-actions">
               <button onClick={applyPushPull} disabled={!active}><Move3d size={14} /> Aplicar</button>
               <button onClick={applyFillet} disabled={!active || active.type !== "box"}><Circle size={14} /> Concordância</button>
             </div>
+            <button className="hollow-action" onClick={applyHollow} disabled={!active}><Shapes size={14} /> Vazar peça</button>
             {active?.type === "box" && <div className="fillet-readout">Raio atual: <strong>{round(active.filletRadius ?? 0)} mm</strong></div>}
           </section>
 
