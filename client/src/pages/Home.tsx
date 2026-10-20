@@ -1101,7 +1101,7 @@ export default function Home() {
         );
         hatch.name = "face-hatch";
         hatch.position.set(...faceSelection.point);
-        hatch.position.add(new THREE.Vector3(...faceSelection.normal).multiplyScalar(0.5));
+        hatch.position.add(new THREE.Vector3(...faceSelection.normal).multiplyScalar(0.05));
         const worldNormal = new THREE.Vector3(...faceSelection.normal).normalize();
         const worldTangent = new THREE.Vector3(...faceSelection.tangent).normalize();
         const worldBitangent = worldNormal.clone().cross(worldTangent).normalize();
@@ -1119,6 +1119,7 @@ export default function Home() {
       selectionHelperRef.current = helper;
       transform.attach(meshMapRef.current.get(activeId)!);
       transform.setMode(tool);
+      transform.setSpace(faceSelection?.id === activeId ? "local" : "world");
     } else {
       transform.detach();
       selectionHelperRef.current = null;
@@ -1148,7 +1149,15 @@ export default function Home() {
       const sign = (localNormal.getComponent(axis) >= 0 ? 1 : -1) as 1 | -1;
       const localTangent = axis === 0 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
       const worldTangent = localTangent.clone().transformDirection(hit.object.matrixWorld).normalize();
-      setFaceSelection({ id: hit.object.userData.modelId as string, axis, sign, point: [round(hit.point.x), round(hit.point.y), round(hit.point.z)], normal: [round(worldNormal.x), round(worldNormal.y), round(worldNormal.z)], tangent: [round(worldTangent.x), round(worldTangent.y), round(worldTangent.z)] });
+      const selectedModel = objectsRef.current.find((item) => item.id === hit.object.userData.modelId);
+      const faceCenter = selectedModel && selectedModel.type !== "boolean"
+        ? new THREE.Vector3(
+            axis === 0 ? sign * selectedModel.dimensions[0] / 2 : 0,
+            axis === 1 ? sign * selectedModel.dimensions[1] / 2 : 0,
+            axis === 2 ? sign * selectedModel.dimensions[2] / 2 : 0,
+          ).applyMatrix4(hit.object.matrixWorld)
+        : hit.point.clone();
+      setFaceSelection({ id: hit.object.userData.modelId as string, axis, sign, point: [round(faceCenter.x), round(faceCenter.y), round(faceCenter.z)], normal: [round(worldNormal.x), round(worldNormal.y), round(worldNormal.z)], tangent: [round(worldTangent.x), round(worldTangent.y), round(worldTangent.z)] });
       setSelectedIds([hit.object.userData.modelId as string]);
       toast.success(`Face selecionada · eixo ${["X", "Y", "Z"][axis]}`);
       return;
