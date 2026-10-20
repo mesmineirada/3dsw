@@ -49,7 +49,7 @@ import { toast } from "sonner";
 const LIMIT = 300;
 const STORAGE_KEY = "modela3d-project";
 
-type ShapeType = "box" | "cylinder" | "sphere" | "cone" | "prism" | "boolean";
+type ShapeType = "box" | "cylinder" | "sphere" | "cone" | "prism" | "screw" | "nut" | "path" | "boolean";
 type ToolMode = "translate" | "rotate" | "scale";
 type BooleanMode = "union" | "subtract" | "intersect";
 type ComponentRole = "conduit" | "lockPin" | "counterLock";
@@ -73,6 +73,7 @@ type ModelObject = {
   componentRole?: ComponentRole;
   anchorTo?: string;
   filletRadius?: number;
+  pathPoints?: Vec3[];
   visible: boolean;
   geometryData?: GeometryData;
 };
@@ -85,6 +86,9 @@ const typeLabels: Record<ShapeType, string> = {
   sphere: "Esfera",
   cone: "Cone",
   prism: "Prisma",
+  screw: "Parafuso",
+  nut: "Porca",
+  path: "Caminho seguido",
   boolean: "Sólido combinado",
 };
 
@@ -128,6 +132,9 @@ function createModel(
     sphere: [50, 50, 50],
     cone: [60, 70, 60],
     prism: [60, 65, 60],
+    screw: [16, 60, 16],
+    nut: [24, 14, 24],
+    path: [8, 8, 8],
   };
   const position: Vec3 = [index * 18 - 18, defaults[type][1] / 2, 0];
   return {
@@ -173,8 +180,7 @@ function modelLabel(model: ModelObject) {
   return model.componentRole ? componentLabels[model.componentRole] : typeLabels[model.type];
 }
 
-function makeTubeGeometry(outerRadius: number, height: number, wall: number) {
-  const segments = 48;
+function makeTubeGeometry(outerRadius: number, height: number, wall: number, segments = 48) {
   const innerRadius = Math.max(outerRadius - wall, outerRadius * 0.35);
   const positions: number[] = [];
   const indices: number[] = [];
@@ -232,6 +238,10 @@ function makeGeometry(model: ModelObject) {
   }
 
   const [width, height, depth] = model.dimensions;
+  if (model.type === "path" && model.pathPoints && model.pathPoints.length > 1) {
+    const curve = new THREE.CatmullRomCurve3(model.pathPoints.map((point) => new THREE.Vector3(...point)));
+    return new THREE.TubeGeometry(curve, Math.max(12, model.pathPoints.length * 12), Math.max(0.5, width / 2), 16, false);
+  }
   if (model.componentRole === "counterLock") {
     return makeTubeGeometry(width / 2, height, Math.min(2.2, width / 5));
   }
@@ -244,6 +254,16 @@ function makeGeometry(model: ModelObject) {
       return new THREE.ConeGeometry(width / 2, height, 48);
     case "prism":
       return new THREE.CylinderGeometry(width / 2, width / 2, height, 6);
+    case "screw": {
+      const headHeight = Math.min(8, height * 0.2);
+      const shaft = new THREE.CylinderGeometry(width * 0.34, width * 0.34, Math.max(1, height - headHeight), 32);
+      shaft.translate(0, -headHeight / 2, 0);
+      const head = new THREE.CylinderGeometry(width / 2, width / 2, headHeight, 6);
+      head.translate(0, height / 2 - headHeight / 2, 0);
+      return mergeGeometries([shaft, head], false) ?? shaft;
+    }
+    case "nut":
+      return makeTubeGeometry(width / 2, height, Math.min(width * 0.22, width / 2 - 0.5), 6);
     case "box":
     default:
       if (model.filletRadius && model.filletRadius > 0) {
@@ -401,6 +421,11 @@ export default function Home() {
   const [wallThickness, setWallThickness] = useState(3);
   const [filletPercent, setFilletPercent] = useState(20);
   const [inspectInterior, setInspectInterior] = useState(false);
+  const [faceMode, setFaceMode] = useState(false);
+  const [faceSelection, setFaceSelection] = useState<{ id: string; axis: 0 | 1 | 2; sign: 1 | -1 } | null>(null);
+  const [pathMode, setPathMode] = useState(false);
+  const [pathPoints, setPathPoints] = useState<Vec3[]>([]);
+  const [pathRadius, setPathRadius] = useState(4);
   const [, setTransformTick] = useState(0);
   const [saved, setSaved] = useState(false);
 
@@ -490,16 +515,21 @@ export default function Home() {
       toast.info("Puxar/empurrar funciona em peças primitivas");
       return;
     }
-    const nextHeight = Math.max(1, round(active.dimensions[1] + pushPullAmount));
-    const heightDelta = (nextHeight - active.dimensions[1]) / 2;
-    const nextPosition: Vec3 = [active.position[0], round(active.position[1] + heightDelta), active.position[2]];
+    const selectedFace = faceSelection?.id === active.id ? faceSelection : null;
+    const axis = selectedFace?.axis ?? 1;
+    const sign = selectedFace?.sign ?? 1;
+    const nextDimensions = [...active.dimensions] as Vec3;
+    nextDimensions[axis] = Math.max(1, round(nextDimensions[axis] + pushPullAmount));
+    const dimensionDelta = nextDimensions[axis] - active.dimensions[axis];
+    const nextPosition = [...active.position] as Vec3;
+    nextPosition[axis] = round(nextPosition[axis] + sign * dimensionDelta / 2);
     commit(objectsRef.current.map((item) => {
-      if (item.id === active.id) return { ...item, dimensions: [item.dimensions[0], nextHeight, item.dimensions[2]] as Vec3, position: nextPosition };
+      if (item.id === active.id) return { ...item, dimensions: nextDimensions, position: nextPosition };
       if (item.anchorTo !== active.id) return item;
-      return { ...item, position: item.position.map((value, index) => round(value + (index === 1 ? heightDelta : 0))) as Vec3 };
+      return { ...item, position: item.position.map((value, index) => round(value + (index === axis ? sign * dimensionDelta / 2 : 0))) as Vec3 };
     }));
-    toast.success(`${pushPullAmount >= 0 ? "Puxado" : "Empurrado"} ${Math.abs(pushPullAmount)} mm`);
-  }, [active, commit, pushPullAmount]);
+    toast.success(`${pushPullAmount >= 0 ? "Puxado" : "Empurrado"} ${Math.abs(pushPullAmount)} mm${selectedFace ? ` no eixo ${["X", "Y", "Z"][axis]}` : ""}`);
+  }, [active, commit, faceSelection, pushPullAmount]);
 
   const applyFillet = useCallback(() => {
     if (!active) {
@@ -570,6 +600,30 @@ export default function Home() {
     setSelectedIds([next.id]);
     toast.success(`${typeLabels[type]} adicionado`);
   }, [commit]);
+
+  const followPath = useCallback(() => {
+    if (pathPoints.length < 2) {
+      toast.info("Desenhe pelo menos dois pontos para usar Seguir caminho");
+      return;
+    }
+    const path: ModelObject = {
+      id: uid(),
+      name: "Caminho seguido",
+      type: "path",
+      position: [0, 0, 0],
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1],
+      dimensions: [Math.max(1, pathRadius * 2), Math.max(1, pathRadius * 2), Math.max(1, pathRadius * 2)],
+      color: COLORS[objectsRef.current.length % COLORS.length],
+      pathPoints: pathPoints.map((point) => [...point] as Vec3),
+      visible: true,
+    };
+    commit([...objectsRef.current, path]);
+    setSelectedIds([path.id]);
+    setPathMode(false);
+    setPathPoints([]);
+    toast.success("Perfil seguido pelo caminho");
+  }, [commit, pathPoints, pathRadius]);
 
   const anchorPosition = useCallback((host: ModelObject, role: ComponentRole): Vec3 => {
     const bounds = worldBounds(host);
@@ -983,6 +1037,11 @@ export default function Home() {
     pointerRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointerRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycasterRef.current.setFromCamera(pointerRef.current, camera);
+    if (pathMode) {
+      const point = raycasterRef.current.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
+      if (point) setPathPoints((current) => [...current, [round(point.x), round(pathRadius), round(point.z)]]);
+      return;
+    }
     const hits = raycasterRef.current.intersectObjects([...meshMapRef.current.values()], true);
     const hit = hits.find((entry) => entry.object.userData.modelId);
     if (autoClick && hit) {
@@ -1009,6 +1068,15 @@ export default function Home() {
       return;
     }
     const id = hit.object.userData.modelId as string;
+    if (faceMode && hit.face) {
+      const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+      const axis = (Math.abs(normal.x) > Math.abs(normal.y) && Math.abs(normal.x) > Math.abs(normal.z) ? 0 : Math.abs(normal.y) > Math.abs(normal.z) ? 1 : 2) as 0 | 1 | 2;
+      const sign = (normal.getComponent(axis) >= 0 ? 1 : -1) as 1 | -1;
+      setFaceSelection({ id, axis, sign });
+      setSelectedIds([id]);
+      toast.success(`Face selecionada · eixo ${["X", "Y", "Z"][axis]}`);
+      return;
+    }
     setSelectedIds((current) => event.shiftKey ? current.includes(id) ? current.filter((item) => item !== id) : [...current, id] : [id]);
   };
 
@@ -1066,6 +1134,8 @@ export default function Home() {
             <button onClick={() => addPrimitive("sphere")}><span className="primitive-icon sphere-icon">●</span><small>Esfera</small></button>
             <button onClick={() => addPrimitive("cone")}><span className="primitive-icon"><Cone size={19} /></span><small>Cone</small></button>
             <button onClick={() => addPrimitive("prism")}><span className="primitive-icon"><Box size={19} /></span><small>Prisma</small></button>
+            <button onClick={() => addPrimitive("screw")}><span className="primitive-icon"><Plus size={19} /></span><small>Parafuso</small></button>
+            <button onClick={() => addPrimitive("nut")}><span className="primitive-icon"><Circle size={19} /></span><small>Porca</small></button>
           </div>
 
           <div className="rail-divider" />
@@ -1074,6 +1144,8 @@ export default function Home() {
             <button className={tool === "translate" ? "selected" : ""} onClick={() => setTool("translate")}><Move3d size={17} /><span>Mover peça</span><kbd>W</kbd></button>
             <button className={tool === "rotate" ? "selected" : ""} onClick={() => setTool("rotate")}><Rotate3d size={17} /><span>Rotacionar</span><kbd>E</kbd></button>
             <button className={tool === "scale" ? "selected" : ""} onClick={() => setTool("scale")}><Maximize2 size={17} /><span>Escalar</span><kbd>R</kbd></button>
+            <button className={faceMode ? "selected" : ""} onClick={() => { setFaceMode((value) => !value); setPathMode(false); }}><Square size={17} /><span>Selecionar face</span></button>
+            <button className={pathMode ? "selected" : ""} onClick={() => { setPathMode((value) => !value); setFaceMode(false); if (!pathMode) setPathPoints([]); }}><Pencil size={17} /><span>Desenhar linha</span></button>
           </div>
 
           <div className="rail-divider" />
@@ -1088,6 +1160,7 @@ export default function Home() {
             <button onClick={applyPushPull} disabled={!active}><Move3d size={16} /><span>Puxar / empurrar</span></button>
             <button onClick={applyFillet} disabled={!active}><Circle size={16} /><span>Arredondar bordas</span></button>
             <button onClick={applyHollow} disabled={!active}><Shapes size={16} /><span>Vazar</span></button>
+            <button onClick={followPath} disabled={pathPoints.length < 2}><Pencil size={16} /><span>Seguir caminho ({pathPoints.length})</span></button>
           </div>
           <div className="tool-stack compact">
             <button onClick={duplicateSelection} disabled={!selectedIds.length}><Copy size={16} /><span>Duplicar</span></button>
@@ -1131,7 +1204,7 @@ export default function Home() {
           </div>
           <div className="viewport-stage">
             <canvas ref={canvasRef} onPointerDown={handleCanvasPointer} />
-            <div className="viewport-hint">{autoClick ? <><span>Autoclique ativo:</span> clique em uma face para criar {componentLabels[placementRole].toLowerCase()}</> : <><span>Arraste</span> para orbitar · <span>Shift + clique</span> para selecionar mais de um</>}</div>
+            <div className="viewport-hint">{pathMode ? <><span>Desenho ativo:</span> clique no plano para adicionar pontos · {pathPoints.length} ponto(s)</> : faceMode ? <><span>Face ativo:</span> clique em uma face e use Puxar/empurrar</> : autoClick ? <><span>Autoclique ativo:</span> clique em uma face para criar {componentLabels[placementRole].toLowerCase()}</> : <><span>Arraste</span> para orbitar · <span>Shift + clique</span> para selecionar mais de um</>}</div>
             <div className="axis-labels"><span className="axis-x">X</span><span className="axis-y">Y</span><span className="axis-z">Z</span></div>
             <div className="work-size"><span>ÁREA ÚTIL</span><strong>300 × 300 × 300</strong><small>milímetros</small></div>
           </div>
@@ -1170,12 +1243,16 @@ export default function Home() {
             <Field label="Parede" value={wallThickness} suffix="mm" disabled={!active} onChange={setWallThickness} />
             <div className="sub-heading"><span>Concordância</span><span>percentual</span></div>
             <Field label="Arredondamento" value={filletPercent} suffix="%" disabled={!active || active.type !== "box"} onChange={setFilletPercent} />
+            <div className="sub-heading"><span>Perfil do caminho</span><span>raio</span></div>
+            <Field label="Raio" value={pathRadius} suffix="mm" disabled={!pathMode} onChange={setPathRadius} />
             <div className="inspector-actions modeling-actions">
               <button onClick={applyPushPull} disabled={!active}><Move3d size={14} /> Aplicar</button>
               <button onClick={applyFillet} disabled={!active || active.type !== "box"}><Circle size={14} /> Concordância</button>
             </div>
             <button className="hollow-action" onClick={applyHollow} disabled={!active}><Shapes size={14} /> Vazar peça</button>
             <button className={`inspect-action ${inspectInterior ? "active" : ""}`} onClick={() => setInspectInterior((value) => !value)} disabled={!active || active.name.startsWith("Vazado") === false}><Eye size={14} /> {inspectInterior ? "Ocultar interior" : "Ver interior da peça"}</button>
+            {faceSelection && faceSelection.id === active?.id && <div className="fillet-readout">Face selecionada: <strong>eixo {["X", "Y", "Z"][faceSelection.axis]}</strong> · use Puxar/empurrar</div>}
+            {pathMode && <div className="fillet-readout">Clique no plano para adicionar pontos. Depois use Seguir caminho.</div>}
             {active?.type === "box" && <div className="fillet-readout">Raio atual: <strong>{round(active.filletRadius ?? 0)} mm</strong></div>}
           </section>
 
