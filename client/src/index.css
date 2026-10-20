@@ -219,5 +219,8 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .face-actions button:hover { color: var(--teal); border-color: rgba(99, 226, 192, .42); }
 .face-actions .danger-face-action { color: #e89a9f; }
 .face-actions .danger-face-action:hover { color: #ffd0d0; border-color: rgba(243, 140, 140, .5); background: rgba(243, 140, 140, .1); }
+.contour-actions { margin-top: 5px; }
+.contour-actions button { color: #ff9bbb; border-color: rgba(255, 107, 157, .25); }
+.contour-actions button:hover { color: #ffd4e2; border-color: rgba(255, 107, 157, .6); background: rgba(255, 107, 157, .1); }
 .fillet-readout { margin-top: 8px; color: #738794; font-family: "DM Mono", monospace; font-size: 8px; }
 .fillet-readout strong { color: #f2c76e; font-weight: 500; }

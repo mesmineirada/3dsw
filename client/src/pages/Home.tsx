@@ -60,6 +60,11 @@ type GeometryData = {
   indices?: number[];
 };
 
+type FaceContour = {
+  start: Vec3;
+  end: Vec3;
+};
+
 type ModelObject = {
   id: string;
   name: string;
@@ -360,6 +365,19 @@ function serializeWorldGeometry(geometry: THREE.BufferGeometry, matrix: THREE.Ma
   };
 }
 
+function contourFrame(contour: FaceContour, face: { normal: Vec3; tangent: Vec3 }) {
+  const start = new THREE.Vector3(...contour.start);
+  const end = new THREE.Vector3(...contour.end);
+  const tangent = new THREE.Vector3(...face.tangent).normalize();
+  const normal = new THREE.Vector3(...face.normal).normalize();
+  const bitangent = normal.clone().cross(tangent).normalize();
+  const delta = end.clone().sub(start);
+  const width = Math.max(1, Math.abs(delta.dot(tangent)));
+  const height = Math.max(1, Math.abs(delta.dot(bitangent)));
+  const center = start.clone().add(end).multiplyScalar(0.5);
+  return { center, tangent, bitangent, normal, width, height };
+}
+
 function inputValue(event: React.ChangeEvent<HTMLInputElement>) {
   const value = Number(event.target.value);
   return Number.isFinite(value) ? value : 0;
@@ -456,6 +474,9 @@ export default function Home() {
   const [faceMode, setFaceMode] = useState(false);
   const [faceSelection, setFaceSelection] = useState<{ id: string; axis: 0 | 1 | 2; sign: 1 | -1; point: Vec3; normal: Vec3; tangent: Vec3 } | null>(null);
   const [holeDiameter, setHoleDiameter] = useState(10);
+  const [faceContour, setFaceContour] = useState<FaceContour | null>(null);
+  const [drawingContour, setDrawingContour] = useState(false);
+  const contourStartRef = useRef<THREE.Vector3 | null>(null);
   const [pathMode, setPathMode] = useState(false);
   const [pathPoints, setPathPoints] = useState<Vec3[]>([]);
   const [pathRadius, setPathRadius] = useState(4);
@@ -605,6 +626,40 @@ export default function Home() {
       toast.error("Não foi possível furar essa face");
     }
   }, [active, commit, faceSelection, holeDiameter]);
+
+  const applyContourOperation = useCallback((kind: "hole" | "cut") => {
+    if (!active || !faceSelection || !faceContour || faceSelection.id !== active.id) {
+      toast.info("Selecione uma face e arraste para criar um contorno");
+      return;
+    }
+    const frame = contourFrame(faceContour, faceSelection);
+    try {
+      const orientation = new THREE.Matrix4().makeBasis(frame.tangent, frame.normal, frame.bitangent);
+      const rotation = new THREE.Euler().setFromRotationMatrix(orientation);
+      const cutter: ModelObject = {
+        id: uid(),
+        name: "Cortador de contorno",
+        type: "box",
+        position: [round(frame.center.x), round(frame.center.y), round(frame.center.z)],
+        rotation: [round(THREE.MathUtils.radToDeg(rotation.x)), round(THREE.MathUtils.radToDeg(rotation.y)), round(THREE.MathUtils.radToDeg(rotation.z))],
+        scale: [1, 1, 1],
+        dimensions: [frame.width, Math.max(...active.dimensions) + 30, frame.height],
+        color: "#ffffff",
+        visible: true,
+      };
+      const result = new Evaluator().evaluate(geometryForBrush(active), geometryForBrush(cutter), SUBTRACTION);
+      const serialized = serializeWorldGeometry(result.geometry, result.matrixWorld);
+      const carved: ModelObject = { id: uid(), name: kind === "hole" ? `Furo contornado · ${active.name}` : `Recorte contornado · ${active.name}`, type: "boolean", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], dimensions: serialized.dimensions, color: active.color, visible: true, geometryData: serialized.data };
+      commit([...objectsRef.current.filter((item) => item.id !== active.id), carved]);
+      setSelectedIds([carved.id]);
+      setFaceContour(null);
+      setFaceSelection(null);
+      toast.success(kind === "hole" ? "Furação criada pelo contorno" : "Recorte criado pelo contorno");
+    } catch (error) {
+      console.error(error);
+      toast.error("Não foi possível aplicar o contorno nessa peça");
+    }
+  }, [active, commit, faceContour, faceSelection]);
 
   const applyFillet = useCallback(() => {
     if (!active) {
@@ -1110,6 +1165,25 @@ export default function Home() {
         scene.add(hatch);
       }
     }
+    const previousContour = scene.getObjectByName("face-contour");
+    if (previousContour) scene.remove(previousContour);
+    if (faceSelection && faceContour) {
+      const frame = contourFrame(faceContour, faceSelection);
+      const halfWidth = frame.width / 2;
+      const halfHeight = frame.height / 2;
+      const offset = frame.normal.clone().multiplyScalar(0.15);
+      const center = frame.center.clone().add(offset);
+      const points = [
+        center.clone().add(frame.tangent.clone().multiplyScalar(-halfWidth)).add(frame.bitangent.clone().multiplyScalar(-halfHeight)),
+        center.clone().add(frame.tangent.clone().multiplyScalar(halfWidth)).add(frame.bitangent.clone().multiplyScalar(-halfHeight)),
+        center.clone().add(frame.tangent.clone().multiplyScalar(halfWidth)).add(frame.bitangent.clone().multiplyScalar(halfHeight)),
+        center.clone().add(frame.tangent.clone().multiplyScalar(-halfWidth)).add(frame.bitangent.clone().multiplyScalar(halfHeight)),
+      ];
+      const contourLine = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color: "#ff6b9d", linewidth: 2, depthTest: false }));
+      contourLine.name = "face-contour";
+      contourLine.renderOrder = 12;
+      scene.add(contourLine);
+    }
     if (selectionHelperRef.current) scene.remove(selectionHelperRef.current);
     if (activeId && meshMapRef.current.has(activeId)) {
       const helper = new THREE.BoxHelper(meshMapRef.current.get(activeId)!, "#f2c76e");
@@ -1124,7 +1198,7 @@ export default function Home() {
       transform.detach();
       selectionHelperRef.current = null;
     }
-  }, [activeId, faceSelection, inspectInterior, objects, selectedIds, tool]);
+  }, [activeId, faceContour, faceSelection, inspectInterior, objects, selectedIds, tool]);
 
   const handleCanvasPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -1141,6 +1215,17 @@ export default function Home() {
     }
     const hits = raycasterRef.current.intersectObjects([...meshMapRef.current.values()], true);
     const hit = hits.find((entry) => entry.object instanceof THREE.Mesh && entry.object.userData.modelId && entry.face);
+    if (faceSelection && faceMode && hit?.object.userData.modelId === faceSelection.id) {
+      const plane = new THREE.Plane(new THREE.Vector3(...faceSelection.normal), -new THREE.Vector3(...faceSelection.normal).dot(new THREE.Vector3(...faceSelection.point)));
+      const point = raycasterRef.current.ray.intersectPlane(plane, new THREE.Vector3());
+      if (point) {
+        contourStartRef.current = point.clone();
+        setFaceContour({ start: [round(point.x), round(point.y), round(point.z)], end: [round(point.x), round(point.y), round(point.z)] });
+        setDrawingContour(true);
+        orbitRef.current?.enabled && (orbitRef.current.enabled = false);
+      }
+      return;
+    }
     if (faceMode && hit?.face && hit.object instanceof THREE.Mesh) {
       const localNormal = hit.face.normal.clone().normalize();
       const normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
@@ -1187,6 +1272,54 @@ export default function Home() {
     }
     const id = hit.object.userData.modelId as string;
     setSelectedIds((current) => event.shiftKey ? current.includes(id) ? current.filter((item) => item !== id) : [...current, id] : [id]);
+  };
+
+  const handleCanvasPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingContour || !faceSelection) return;
+    const canvas = canvasRef.current;
+    const camera = cameraRef.current;
+    if (!canvas || !camera || !contourStartRef.current) return;
+    const rect = canvas.getBoundingClientRect();
+    const pointer = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+    raycasterRef.current.setFromCamera(pointer, camera);
+    const normal = new THREE.Vector3(...faceSelection.normal);
+    const plane = new THREE.Plane(normal, -normal.dot(new THREE.Vector3(...faceSelection.point)));
+    const point = raycasterRef.current.ray.intersectPlane(plane, new THREE.Vector3());
+    if (point) setFaceContour({ start: [round(contourStartRef.current.x), round(contourStartRef.current.y), round(contourStartRef.current.z)], end: [round(point.x), round(point.y), round(point.z)] });
+  };
+
+  const handleCanvasPointerUp = () => {
+    if (!drawingContour) return;
+    setDrawingContour(false);
+    contourStartRef.current = null;
+    if (!faceContour || (Math.abs(faceContour.start[0] - faceContour.end[0]) < 2 && Math.abs(faceContour.start[2] - faceContour.end[2]) < 2)) {
+      setFaceContour(null);
+      toast.info("Arraste uma área menor sobre a face para criar o contorno");
+    } else {
+      toast.success("Contorno criado: escolha Furar contorno ou Recortar contorno");
+    }
+    if (orbitRef.current) orbitRef.current.enabled = true;
+  };
+
+  const handleCanvasDoubleClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    const camera = cameraRef.current;
+    if (!canvas || !camera) return;
+    const rect = canvas.getBoundingClientRect();
+    raycasterRef.current.setFromCamera(new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1), camera);
+    const hit = raycasterRef.current.intersectObjects([...meshMapRef.current.values()], true).find((entry) => entry.object instanceof THREE.Mesh && entry.object.userData.modelId && entry.face);
+    if (!hit || !(hit.object instanceof THREE.Mesh) || !hit.face) return;
+    const localNormal = hit.face.normal.clone().normalize();
+    const worldNormal = localNormal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
+    const axis = (Math.abs(localNormal.x) > Math.abs(localNormal.y) && Math.abs(localNormal.x) > Math.abs(localNormal.z) ? 0 : Math.abs(localNormal.y) > Math.abs(localNormal.z) ? 1 : 2) as 0 | 1 | 2;
+    const sign = (localNormal.getComponent(axis) >= 0 ? 1 : -1) as 1 | -1;
+    const tangent = (axis === 0 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).transformDirection(hit.object.matrixWorld).normalize();
+    const selectedModel = objectsRef.current.find((item) => item.id === hit.object.userData.modelId);
+    const center = selectedModel && selectedModel.type !== "boolean" ? new THREE.Vector3(axis === 0 ? sign * selectedModel.dimensions[0] / 2 : 0, axis === 1 ? sign * selectedModel.dimensions[1] / 2 : 0, axis === 2 ? sign * selectedModel.dimensions[2] / 2 : 0).applyMatrix4(hit.object.matrixWorld) : hit.point.clone();
+    setFaceSelection({ id: hit.object.userData.modelId as string, axis, sign, point: [round(center.x), round(center.y), round(center.z)], normal: [round(worldNormal.x), round(worldNormal.y), round(worldNormal.z)], tangent: [round(tangent.x), round(tangent.y), round(tangent.z)] });
+    setSelectedIds([hit.object.userData.modelId as string]);
+    setFaceMode(true);
+    toast.success("Face selecionada. Arraste sobre ela para criar um contorno.");
   };
 
   const frameSelection = () => {
@@ -1312,7 +1445,7 @@ export default function Home() {
             </div>
           </div>
           <div className="viewport-stage">
-            <canvas ref={canvasRef} onPointerDown={handleCanvasPointer} />
+            <canvas ref={canvasRef} onPointerDown={handleCanvasPointer} onPointerMove={handleCanvasPointerMove} onPointerUp={handleCanvasPointerUp} onDoubleClick={handleCanvasDoubleClick} />
             <div className="viewport-hint">{pathMode ? <><span>Desenho ativo:</span> clique no plano para adicionar pontos · {pathPoints.length} ponto(s)</> : faceMode ? <><span>Face ativo:</span> clique em uma face e use Puxar/empurrar</> : autoClick ? <><span>Autoclique ativo:</span> clique em uma face para criar {componentLabels[placementRole].toLowerCase()}</> : <><span>Arraste</span> para orbitar · <span>Shift + clique</span> para selecionar mais de um</>}</div>
             <div className="axis-labels"><span className="axis-x">X</span><span className="axis-y">Y</span><span className="axis-z">Z</span></div>
             <div className="work-size"><span>ÁREA ÚTIL</span><strong>300 × 300 × 300</strong><small>milímetros</small></div>
@@ -1370,6 +1503,10 @@ export default function Home() {
                 <button onClick={drillFace}><Circle size={13} /> Furar</button>
                 <button onClick={deleteFace} className="danger-face-action"><Trash2 size={13} /> Deletar</button>
               </div>
+              {faceContour && <div className="face-actions contour-actions">
+                <button onClick={() => applyContourOperation("hole")}><Circle size={13} /> Furar contorno</button>
+                <button onClick={() => applyContourOperation("cut")}><Scissors size={13} /> Recortar contorno</button>
+              </div>}
               <div className="fillet-readout">A face está achurada no viewport. Use Mover para deslocá-la visualmente.</div>
             </>}
             {pathMode && <div className="fillet-readout">Clique no plano para adicionar pontos. Depois use Seguir caminho.</div>}
