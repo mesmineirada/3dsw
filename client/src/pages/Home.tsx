@@ -74,6 +74,7 @@ type ModelObject = {
   anchorTo?: string;
   filletRadius?: number;
   pathPoints?: Vec3[];
+  openFace?: { axis: 0 | 1 | 2; sign: 1 | -1 };
   visible: boolean;
   geometryData?: GeometryData;
 };
@@ -221,6 +222,36 @@ function makeTubeGeometry(outerRadius: number, height: number, wall: number, seg
   return geometry;
 }
 
+function makeOpenBoxGeometry(width: number, height: number, depth: number, openFace: { axis: 0 | 1 | 2; sign: 1 | -1 }) {
+  const x = width / 2;
+  const y = height / 2;
+  const z = depth / 2;
+  const faces: Array<{ axis: 0 | 1 | 2; sign: 1 | -1; corners: Vec3[] }> = [
+    { axis: 0, sign: 1, corners: [[x, -y, -z], [x, y, -z], [x, y, z], [x, -y, z]] },
+    { axis: 0, sign: -1, corners: [[-x, -y, z], [-x, y, z], [-x, y, -z], [-x, -y, -z]] },
+    { axis: 1, sign: 1, corners: [[-x, y, -z], [-x, y, z], [x, y, z], [x, y, -z]] },
+    { axis: 1, sign: -1, corners: [[-x, -y, z], [-x, -y, -z], [x, -y, -z], [x, -y, z]] },
+    { axis: 2, sign: 1, corners: [[-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z]] },
+    { axis: 2, sign: -1, corners: [[x, -y, -z], [-x, -y, -z], [-x, y, -z], [x, y, -z]] },
+  ];
+  const positions: number[] = [];
+  faces.filter((face) => face.axis !== openFace.axis || face.sign !== openFace.sign).forEach((face) => {
+    face.corners.forEach((corner) => positions.push(...corner));
+  });
+  const indices: number[] = [];
+  for (let faceIndex = 0; faceIndex < positions.length / 12; faceIndex += 1) {
+    const base = faceIndex * 4;
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 function makeGeometry(model: ModelObject) {
   if (model.type === "boolean" && model.geometryData) {
     const geometry = new THREE.BufferGeometry();
@@ -266,6 +297,7 @@ function makeGeometry(model: ModelObject) {
       return makeTubeGeometry(width / 2, height, Math.min(width * 0.22, width / 2 - 0.5), 6);
     case "box":
     default:
+      if (model.openFace) return makeOpenBoxGeometry(width, height, depth, model.openFace);
       if (model.filletRadius && model.filletRadius > 0) {
         const radius = Math.min(model.filletRadius, Math.max(0, Math.min(width, height, depth) / 2 - 0.1));
         return new RoundedBoxGeometry(width, height, depth, 5, radius);
@@ -422,7 +454,8 @@ export default function Home() {
   const [filletPercent, setFilletPercent] = useState(20);
   const [inspectInterior, setInspectInterior] = useState(false);
   const [faceMode, setFaceMode] = useState(false);
-  const [faceSelection, setFaceSelection] = useState<{ id: string; axis: 0 | 1 | 2; sign: 1 | -1 } | null>(null);
+  const [faceSelection, setFaceSelection] = useState<{ id: string; axis: 0 | 1 | 2; sign: 1 | -1; point: Vec3; normal: Vec3 } | null>(null);
+  const [holeDiameter, setHoleDiameter] = useState(10);
   const [pathMode, setPathMode] = useState(false);
   const [pathPoints, setPathPoints] = useState<Vec3[]>([]);
   const [pathRadius, setPathRadius] = useState(4);
@@ -506,7 +539,7 @@ export default function Home() {
     else updateModel(id, { [key]: nextVector } as Partial<ModelObject>);
   }, [updateModel, updatePositionWithAnchors]);
 
-  const applyPushPull = useCallback(() => {
+  const applyPushPull = useCallback((forcedAmount?: number) => {
     if (!active) {
       toast.info("Selecione uma peça para usar Puxar/empurrar");
       return;
@@ -516,10 +549,11 @@ export default function Home() {
       return;
     }
     const selectedFace = faceSelection?.id === active.id ? faceSelection : null;
+    const amount = forcedAmount ?? pushPullAmount;
     const axis = selectedFace?.axis ?? 1;
     const sign = selectedFace?.sign ?? 1;
     const nextDimensions = [...active.dimensions] as Vec3;
-    nextDimensions[axis] = Math.max(1, round(nextDimensions[axis] + pushPullAmount));
+    nextDimensions[axis] = Math.max(1, round(nextDimensions[axis] + amount));
     const dimensionDelta = nextDimensions[axis] - active.dimensions[axis];
     const nextPosition = [...active.position] as Vec3;
     nextPosition[axis] = round(nextPosition[axis] + sign * dimensionDelta / 2);
@@ -528,8 +562,49 @@ export default function Home() {
       if (item.anchorTo !== active.id) return item;
       return { ...item, position: item.position.map((value, index) => round(value + (index === axis ? sign * dimensionDelta / 2 : 0))) as Vec3 };
     }));
-    toast.success(`${pushPullAmount >= 0 ? "Puxado" : "Empurrado"} ${Math.abs(pushPullAmount)} mm${selectedFace ? ` no eixo ${["X", "Y", "Z"][axis]}` : ""}`);
+    toast.success(`${amount >= 0 ? "Puxado" : "Recuado"} ${Math.abs(amount)} mm${selectedFace ? ` no eixo ${["X", "Y", "Z"][axis]}` : ""}`);
   }, [active, commit, faceSelection, pushPullAmount]);
+
+  const deleteFace = useCallback(() => {
+    if (!active || !faceSelection || faceSelection.id !== active.id) {
+      toast.info("Selecione uma face primeiro");
+      return;
+    }
+    if (active.type !== "box") {
+      toast.info("Deletar face está disponível para cubos nesta versão");
+      return;
+    }
+    updateModel(active.id, { openFace: { axis: faceSelection.axis, sign: faceSelection.sign }, filletRadius: undefined });
+    toast.success("Face deletada: peça aberta");
+  }, [active, faceSelection, updateModel]);
+
+  const drillFace = useCallback(() => {
+    if (!active || !faceSelection || faceSelection.id !== active.id) {
+      toast.info("Selecione uma face primeiro");
+      return;
+    }
+    if (active.type === "boolean" || active.type === "path") {
+      toast.info("Furar está disponível para peças primitivas");
+      return;
+    }
+    try {
+      const length = Math.max(...active.dimensions) + 30;
+      const rotation = new THREE.Euler().setFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...faceSelection.normal)));
+      const cutter: ModelObject = {
+        id: uid(), name: "Broca", type: "cylinder", position: faceSelection.point, rotation: [round(THREE.MathUtils.radToDeg(rotation.x)), round(THREE.MathUtils.radToDeg(rotation.y)), round(THREE.MathUtils.radToDeg(rotation.z))], scale: [1, 1, 1], dimensions: [Math.max(1, holeDiameter), length, Math.max(1, holeDiameter)], color: "#ffffff", visible: true,
+      };
+      const result = new Evaluator().evaluate(geometryForBrush(active), geometryForBrush(cutter), SUBTRACTION);
+      const serialized = serializeWorldGeometry(result.geometry, result.matrixWorld);
+      const drilled: ModelObject = { id: uid(), name: `Furo · ${active.name}`, type: "boolean", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], dimensions: serialized.dimensions, color: active.color, visible: true, geometryData: serialized.data };
+      commit([...objectsRef.current.filter((item) => item.id !== active.id), drilled]);
+      setSelectedIds([drilled.id]);
+      setFaceSelection(null);
+      toast.success(`Furo de ${round(holeDiameter)} mm criado`);
+    } catch (error) {
+      console.error(error);
+      toast.error("Não foi possível furar essa face");
+    }
+  }, [active, commit, faceSelection, holeDiameter]);
 
   const applyFillet = useCallback(() => {
     if (!active) {
@@ -1014,6 +1089,24 @@ export default function Home() {
       scene.add(group);
       meshMapRef.current.set(model.id, group);
     });
+    const previousHatch = scene.getObjectByName("face-hatch");
+    if (previousHatch) scene.remove(previousHatch);
+    if (faceSelection) {
+      const selectedModel = objects.find((item) => item.id === faceSelection.id);
+      if (selectedModel) {
+        const faceSize = faceSelection.axis === 0 ? [selectedModel.dimensions[2], selectedModel.dimensions[1]] : faceSelection.axis === 1 ? [selectedModel.dimensions[0], selectedModel.dimensions[2]] : [selectedModel.dimensions[0], selectedModel.dimensions[1]];
+        const hatch = new THREE.Mesh(
+          new THREE.PlaneGeometry(faceSize[0], faceSize[1], 12, 12),
+          new THREE.MeshBasicMaterial({ color: "#f2c76e", transparent: true, opacity: 0.78, wireframe: true, side: THREE.DoubleSide, depthTest: false }),
+        );
+        hatch.name = "face-hatch";
+        hatch.position.set(...faceSelection.point);
+        hatch.position.add(new THREE.Vector3(...faceSelection.normal).multiplyScalar(0.5));
+        hatch.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...faceSelection.normal));
+        hatch.renderOrder = 10;
+        scene.add(hatch);
+      }
+    }
     if (selectionHelperRef.current) scene.remove(selectionHelperRef.current);
     if (activeId && meshMapRef.current.has(activeId)) {
       const helper = new THREE.BoxHelper(meshMapRef.current.get(activeId)!, "#f2c76e");
@@ -1027,7 +1120,7 @@ export default function Home() {
       transform.detach();
       selectionHelperRef.current = null;
     }
-  }, [activeId, inspectInterior, objects, selectedIds, tool]);
+  }, [activeId, faceSelection, inspectInterior, objects, selectedIds, tool]);
 
   const handleCanvasPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -1072,7 +1165,7 @@ export default function Home() {
       const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
       const axis = (Math.abs(normal.x) > Math.abs(normal.y) && Math.abs(normal.x) > Math.abs(normal.z) ? 0 : Math.abs(normal.y) > Math.abs(normal.z) ? 1 : 2) as 0 | 1 | 2;
       const sign = (normal.getComponent(axis) >= 0 ? 1 : -1) as 1 | -1;
-      setFaceSelection({ id, axis, sign });
+      setFaceSelection({ id, axis, sign, point: [round(hit.point.x), round(hit.point.y), round(hit.point.z)], normal: [round(normal.x), round(normal.y), round(normal.z)] });
       setSelectedIds([id]);
       toast.success(`Face selecionada · eixo ${["X", "Y", "Z"][axis]}`);
       return;
@@ -1157,7 +1250,7 @@ export default function Home() {
           </div>
           <div className="tool-stack compact modeling-tools">
             <button onClick={cutSelection} disabled={selectedIds.length !== 2}><Scissors size={16} /><span>Recortar</span></button>
-            <button onClick={applyPushPull} disabled={!active}><Move3d size={16} /><span>Puxar / empurrar</span></button>
+            <button onClick={() => applyPushPull()} disabled={!active}><Move3d size={16} /><span>Puxar / empurrar</span></button>
             <button onClick={applyFillet} disabled={!active}><Circle size={16} /><span>Arredondar bordas</span></button>
             <button onClick={applyHollow} disabled={!active}><Shapes size={16} /><span>Vazar</span></button>
             <button onClick={followPath} disabled={pathPoints.length < 2}><Pencil size={16} /><span>Seguir caminho ({pathPoints.length})</span></button>
@@ -1246,12 +1339,23 @@ export default function Home() {
             <div className="sub-heading"><span>Perfil do caminho</span><span>raio</span></div>
             <Field label="Raio" value={pathRadius} suffix="mm" disabled={!pathMode} onChange={setPathRadius} />
             <div className="inspector-actions modeling-actions">
-              <button onClick={applyPushPull} disabled={!active}><Move3d size={14} /> Aplicar</button>
+              <button onClick={() => applyPushPull()} disabled={!active}><Move3d size={14} /> Aplicar</button>
               <button onClick={applyFillet} disabled={!active || active.type !== "box"}><Circle size={14} /> Concordância</button>
             </div>
             <button className="hollow-action" onClick={applyHollow} disabled={!active}><Shapes size={14} /> Vazar peça</button>
             <button className={`inspect-action ${inspectInterior ? "active" : ""}`} onClick={() => setInspectInterior((value) => !value)} disabled={!active || active.name.startsWith("Vazado") === false}><Eye size={14} /> {inspectInterior ? "Ocultar interior" : "Ver interior da peça"}</button>
-            {faceSelection && faceSelection.id === active?.id && <div className="fillet-readout">Face selecionada: <strong>eixo {["X", "Y", "Z"][faceSelection.axis]}</strong> · use Puxar/empurrar</div>}
+            {faceSelection && faceSelection.id === active?.id && <>
+              <div className="sub-heading"><span>Face selecionada · eixo {["X", "Y", "Z"][faceSelection.axis]}</span><span>ações</span></div>
+              <Field label="Diâmetro do furo" value={holeDiameter} suffix="mm" disabled={!active} onChange={setHoleDiameter} />
+              <div className="face-actions">
+                <button onClick={() => applyPushPull(Math.abs(pushPullAmount))}><Move3d size={13} /> Puxar</button>
+                <button onClick={() => applyPushPull(-Math.abs(pushPullAmount))}><Minus size={13} /> Recuar</button>
+                <button onClick={() => applyPushPull(Math.abs(pushPullAmount))}><Move3d size={13} /> Mover</button>
+                <button onClick={drillFace}><Circle size={13} /> Furar</button>
+                <button onClick={deleteFace} className="danger-face-action"><Trash2 size={13} /> Deletar</button>
+              </div>
+              <div className="fillet-readout">A face está achurada no viewport. Use Mover para deslocá-la visualmente.</div>
+            </>}
             {pathMode && <div className="fillet-readout">Clique no plano para adicionar pontos. Depois use Seguir caminho.</div>}
             {active?.type === "box" && <div className="fillet-readout">Raio atual: <strong>{round(active.filletRadius ?? 0)} mm</strong></div>}
           </section>
