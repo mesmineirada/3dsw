@@ -400,6 +400,7 @@ export default function Home() {
   const [pushPullAmount, setPushPullAmount] = useState(10);
   const [wallThickness, setWallThickness] = useState(3);
   const [filletPercent, setFilletPercent] = useState(20);
+  const [inspectInterior, setInspectInterior] = useState(false);
   const [, setTransformTick] = useState(0);
   const [saved, setSaved] = useState(false);
 
@@ -941,16 +942,20 @@ export default function Home() {
         roughness: 0.26,
         metalness: 0.08,
         transparent: true,
-        opacity: selectedIds.includes(model.id) ? 0.95 : 0.88,
+        opacity: inspectInterior && model.id === activeId ? 0.24 : selectedIds.includes(model.id) ? 0.95 : 0.88,
+        depthWrite: !(inspectInterior && model.id === activeId),
+        side: inspectInterior && model.id === activeId ? THREE.DoubleSide : THREE.FrontSide,
       });
       const mesh = new THREE.Mesh(makeGeometry(model), material);
+      mesh.renderOrder = inspectInterior && model.id === activeId ? 2 : 0;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.userData.modelId = model.id;
       const edges = new THREE.LineSegments(
         new THREE.EdgesGeometry(mesh.geometry, 28),
-        new THREE.LineBasicMaterial({ color: selectedIds.includes(model.id) ? "#ffffff" : "#101c27", transparent: true, opacity: selectedIds.includes(model.id) ? 0.8 : 0.4 }),
+        new THREE.LineBasicMaterial({ color: inspectInterior && model.id === activeId ? "#b6a5ff" : selectedIds.includes(model.id) ? "#ffffff" : "#101c27", transparent: true, opacity: inspectInterior && model.id === activeId ? 0.95 : selectedIds.includes(model.id) ? 0.8 : 0.4 }),
       );
+      edges.renderOrder = 3;
       group.add(mesh, edges);
       scene.add(group);
       meshMapRef.current.set(model.id, group);
@@ -968,7 +973,7 @@ export default function Home() {
       transform.detach();
       selectionHelperRef.current = null;
     }
-  }, [activeId, objects, selectedIds, tool]);
+  }, [activeId, inspectInterior, objects, selectedIds, tool]);
 
   const handleCanvasPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -1170,6 +1175,7 @@ export default function Home() {
               <button onClick={applyFillet} disabled={!active || active.type !== "box"}><Circle size={14} /> Concordância</button>
             </div>
             <button className="hollow-action" onClick={applyHollow} disabled={!active}><Shapes size={14} /> Vazar peça</button>
+            <button className={`inspect-action ${inspectInterior ? "active" : ""}`} onClick={() => setInspectInterior((value) => !value)} disabled={!active || active.name.startsWith("Vazado") === false}><Eye size={14} /> {inspectInterior ? "Ocultar interior" : "Ver interior da peça"}</button>
             {active?.type === "box" && <div className="fillet-readout">Raio atual: <strong>{round(active.filletRadius ?? 0)} mm</strong></div>}
           </section>
 

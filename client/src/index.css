@@ -212,5 +212,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .modeling-actions button:last-child { color: var(--amber); }
 .hollow-action { width: 100%; height: 29px; display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 7px; color: #b6a5ff; background: rgba(158, 155, 255, .08); border: 1px solid rgba(158, 155, 255, .2); border-radius: 5px; font-size: 9px; font-weight: 800; }
 .hollow-action:hover { color: #dedaff; background: rgba(158, 155, 255, .16); border-color: rgba(158, 155, 255, .45); }
+.inspect-action { width: 100%; height: 29px; display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 5px; color: #91b7ff; background: rgba(90, 135, 220, .08); border: 1px solid rgba(90, 135, 220, .2); border-radius: 5px; font-size: 9px; font-weight: 800; }
+.inspect-action:hover, .inspect-action.active { color: #d5e4ff; background: rgba(90, 135, 220, .17); border-color: rgba(90, 135, 220, .5); }
 .fillet-readout { margin-top: 8px; color: #738794; font-family: "DM Mono", monospace; font-size: 8px; }
 .fillet-readout strong { color: #f2c76e; font-weight: 500; }
