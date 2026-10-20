@@ -477,6 +477,8 @@ export default function Home() {
   const [faceContour, setFaceContour] = useState<FaceContour | null>(null);
   const [drawingContour, setDrawingContour] = useState(false);
   const contourStartRef = useRef<THREE.Vector3 | null>(null);
+  const [draggingFace, setDraggingFace] = useState(false);
+  const faceDragRef = useRef<{ id: string; axis: 0 | 1 | 2; sign: 1 | -1; startY: number; baseObjects: ModelObject[] } | null>(null);
   const [pathMode, setPathMode] = useState(false);
   const [pathPoints, setPathPoints] = useState<Vec3[]>([]);
   const [pathRadius, setPathRadius] = useState(4);
@@ -1146,7 +1148,7 @@ export default function Home() {
     });
     const previousHatch = scene.getObjectByName("face-hatch");
     if (previousHatch) scene.remove(previousHatch);
-    if (faceSelection) {
+    if (faceSelection && !faceContour) {
       const selectedModel = objects.find((item) => item.id === faceSelection.id);
       if (selectedModel) {
         const faceSize = faceSelection.axis === 0 ? [selectedModel.dimensions[2], selectedModel.dimensions[1]] : faceSelection.axis === 1 ? [selectedModel.dimensions[0], selectedModel.dimensions[2]] : [selectedModel.dimensions[0], selectedModel.dimensions[1]];
@@ -1216,6 +1218,15 @@ export default function Home() {
     const hits = raycasterRef.current.intersectObjects([...meshMapRef.current.values()], true);
     const hit = hits.find((entry) => entry.object instanceof THREE.Mesh && entry.object.userData.modelId && entry.face);
     if (faceSelection && faceMode && hit?.object.userData.modelId === faceSelection.id) {
+      if (event.ctrlKey) {
+        historyRef.current.push(cloneObjects(objectsRef.current));
+        redoRef.current = [];
+        faceDragRef.current = { id: faceSelection.id, axis: faceSelection.axis, sign: faceSelection.sign, startY: event.clientY, baseObjects: cloneObjects(objectsRef.current) };
+        setFaceContour(null);
+        setDraggingFace(true);
+        orbitRef.current?.enabled && (orbitRef.current.enabled = false);
+        return;
+      }
       const plane = new THREE.Plane(new THREE.Vector3(...faceSelection.normal), -new THREE.Vector3(...faceSelection.normal).dot(new THREE.Vector3(...faceSelection.point)));
       const point = raycasterRef.current.ray.intersectPlane(plane, new THREE.Vector3());
       if (point) {
@@ -1275,6 +1286,27 @@ export default function Home() {
   };
 
   const handleCanvasPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (draggingFace && faceDragRef.current) {
+      const drag = faceDragRef.current;
+      const amount = round((drag.startY - event.clientY) * 0.35);
+      const base = drag.baseObjects.find((item) => item.id === drag.id);
+      if (base) {
+        const nextDimensions = [...base.dimensions] as Vec3;
+        nextDimensions[drag.axis] = Math.max(1, round(nextDimensions[drag.axis] + amount));
+        const dimensionDelta = nextDimensions[drag.axis] - base.dimensions[drag.axis];
+        const nextPosition = [...base.position] as Vec3;
+        nextPosition[drag.axis] = round(nextPosition[drag.axis] + drag.sign * dimensionDelta / 2);
+        const next = drag.baseObjects.map((item) => item.id === drag.id
+          ? { ...item, dimensions: nextDimensions, position: nextPosition }
+          : item.anchorTo === drag.id
+            ? { ...item, position: item.position.map((value, index) => round(value + (index === drag.axis ? drag.sign * dimensionDelta / 2 : 0))) as Vec3 }
+            : item);
+        objectsRef.current = next;
+        setObjects(next);
+        setSaved(false);
+      }
+      return;
+    }
     if (!drawingContour || !faceSelection) return;
     const canvas = canvasRef.current;
     const camera = cameraRef.current;
@@ -1289,6 +1321,13 @@ export default function Home() {
   };
 
   const handleCanvasPointerUp = () => {
+    if (draggingFace) {
+      setDraggingFace(false);
+      faceDragRef.current = null;
+      if (orbitRef.current) orbitRef.current.enabled = true;
+      toast.success("Face ajustada por Ctrl-drag");
+      return;
+    }
     if (!drawingContour) return;
     setDrawingContour(false);
     contourStartRef.current = null;
@@ -1446,7 +1485,7 @@ export default function Home() {
           </div>
           <div className="viewport-stage">
             <canvas ref={canvasRef} onPointerDown={handleCanvasPointer} onPointerMove={handleCanvasPointerMove} onPointerUp={handleCanvasPointerUp} onDoubleClick={handleCanvasDoubleClick} />
-            <div className="viewport-hint">{pathMode ? <><span>Desenho ativo:</span> clique no plano para adicionar pontos · {pathPoints.length} ponto(s)</> : faceMode ? <><span>Face ativo:</span> clique em uma face e use Puxar/empurrar</> : autoClick ? <><span>Autoclique ativo:</span> clique em uma face para criar {componentLabels[placementRole].toLowerCase()}</> : <><span>Arraste</span> para orbitar · <span>Shift + clique</span> para selecionar mais de um</>}</div>
+            <div className="viewport-hint">{pathMode ? <><span>Desenho ativo:</span> clique no plano para adicionar pontos · {pathPoints.length} ponto(s)</> : faceMode ? <><span>Face ativa:</span> arraste para contorno · <span>Ctrl + arraste</span> para expandir/retrair</> : autoClick ? <><span>Autoclique ativo:</span> clique em uma face para criar {componentLabels[placementRole].toLowerCase()}</> : <><span>Arraste</span> para orbitar · <span>Shift + clique</span> para selecionar mais de um</>}</div>
             <div className="axis-labels"><span className="axis-x">X</span><span className="axis-y">Y</span><span className="axis-z">Z</span></div>
             <div className="work-size"><span>ÁREA ÚTIL</span><strong>300 × 300 × 300</strong><small>milímetros</small></div>
           </div>
@@ -1507,7 +1546,7 @@ export default function Home() {
                 <button onClick={() => applyContourOperation("hole")}><Circle size={13} /> Furar contorno</button>
                 <button onClick={() => applyContourOperation("cut")}><Scissors size={13} /> Recortar contorno</button>
               </div>}
-              <div className="fillet-readout">A face está achurada no viewport. Use Mover para deslocá-la visualmente.</div>
+              <div className="fillet-readout">Arraste para contorno. Segure <strong>Ctrl</strong> e arraste para expandir ou retrair a face em tempo real.</div>
             </>}
             {pathMode && <div className="fillet-readout">Clique no plano para adicionar pontos. Depois use Seguir caminho.</div>}
             {active?.type === "box" && <div className="fillet-readout">Raio atual: <strong>{round(active.filletRadius ?? 0)} mm</strong></div>}
