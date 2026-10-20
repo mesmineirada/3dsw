@@ -611,10 +611,13 @@ export default function Home() {
       return;
     }
     try {
-      const length = Math.max(...active.dimensions) + 30;
+      const faceDepth = active.dimensions[faceSelection.axis];
+      const depth = Math.min(Math.max(1, Math.abs(pushPullAmount)), Math.max(1, faceDepth - wallThickness));
+      const normal = new THREE.Vector3(...faceSelection.normal).normalize();
+      const cutterCenter = new THREE.Vector3(...faceSelection.point).add(normal.clone().multiplyScalar(-(depth / 2 - 0.15)));
       const rotation = new THREE.Euler().setFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...faceSelection.normal)));
       const cutter: ModelObject = {
-        id: uid(), name: "Broca", type: "cylinder", position: faceSelection.point, rotation: [round(THREE.MathUtils.radToDeg(rotation.x)), round(THREE.MathUtils.radToDeg(rotation.y)), round(THREE.MathUtils.radToDeg(rotation.z))], scale: [1, 1, 1], dimensions: [Math.max(1, holeDiameter), length, Math.max(1, holeDiameter)], color: "#ffffff", visible: true,
+        id: uid(), name: "Broca", type: "cylinder", position: [round(cutterCenter.x), round(cutterCenter.y), round(cutterCenter.z)], rotation: [round(THREE.MathUtils.radToDeg(rotation.x)), round(THREE.MathUtils.radToDeg(rotation.y)), round(THREE.MathUtils.radToDeg(rotation.z))], scale: [1, 1, 1], dimensions: [Math.max(1, holeDiameter), depth + 0.3, Math.max(1, holeDiameter)], color: "#ffffff", visible: true,
       };
       const result = new Evaluator().evaluate(geometryForBrush(active), geometryForBrush(cutter), SUBTRACTION);
       const serialized = serializeWorldGeometry(result.geometry, result.matrixWorld);
@@ -622,30 +625,35 @@ export default function Home() {
       commit([...objectsRef.current.filter((item) => item.id !== active.id), drilled]);
       setSelectedIds([drilled.id]);
       setFaceSelection(null);
-      toast.success(`Furo de ${round(holeDiameter)} mm criado`);
+      toast.success(`Cavidade circular de ${round(holeDiameter)} mm × ${round(depth)} mm criada`);
     } catch (error) {
       console.error(error);
       toast.error("Não foi possível furar essa face");
     }
-  }, [active, commit, faceSelection, holeDiameter]);
+  }, [active, commit, faceSelection, holeDiameter, pushPullAmount, wallThickness]);
 
   const applyContourOperation = useCallback((kind: "hole" | "cut") => {
     if (!active || !faceSelection || !faceContour || faceSelection.id !== active.id) {
       toast.info("Selecione uma face e arraste para criar um contorno");
       return;
     }
-    const frame = contourFrame(faceContour, faceSelection);
+      const frame = contourFrame(faceContour, faceSelection);
     try {
       const orientation = new THREE.Matrix4().makeBasis(frame.tangent, frame.normal, frame.bitangent);
       const rotation = new THREE.Euler().setFromRotationMatrix(orientation);
+      const faceDepth = active.dimensions[faceSelection.axis];
+      const pocketDepth = Math.min(Math.max(1, Math.abs(pushPullAmount)), Math.max(1, faceDepth - wallThickness));
+      const normalOffset = kind === "hole" ? frame.normal.clone().multiplyScalar(-(pocketDepth / 2 - 0.15)) : frame.normal.clone().multiplyScalar(-((Math.max(...active.dimensions) + 30) / 2 - 0.15));
+      const cutterDepth = kind === "hole" ? pocketDepth + 0.3 : Math.max(...active.dimensions) + 30;
+      const cutterCenter = frame.center.clone().add(normalOffset);
       const cutter: ModelObject = {
         id: uid(),
         name: "Cortador de contorno",
         type: "box",
-        position: [round(frame.center.x), round(frame.center.y), round(frame.center.z)],
+        position: [round(cutterCenter.x), round(cutterCenter.y), round(cutterCenter.z)],
         rotation: [round(THREE.MathUtils.radToDeg(rotation.x)), round(THREE.MathUtils.radToDeg(rotation.y)), round(THREE.MathUtils.radToDeg(rotation.z))],
         scale: [1, 1, 1],
-        dimensions: [frame.width, Math.max(...active.dimensions) + 30, frame.height],
+        dimensions: [frame.width, cutterDepth, frame.height],
         color: "#ffffff",
         visible: true,
       };
@@ -656,12 +664,12 @@ export default function Home() {
       setSelectedIds([carved.id]);
       setFaceContour(null);
       setFaceSelection(null);
-      toast.success(kind === "hole" ? "Furação criada pelo contorno" : "Recorte criado pelo contorno");
+      toast.success(kind === "hole" ? `Cavidade retangular de ${round(pocketDepth)} mm criada` : "Recorte passante criado pelo contorno");
     } catch (error) {
       console.error(error);
       toast.error("Não foi possível aplicar o contorno nessa peça");
     }
-  }, [active, commit, faceContour, faceSelection]);
+  }, [active, commit, faceContour, faceSelection, pushPullAmount, wallThickness]);
 
   const applyFillet = useCallback(() => {
     if (!active) {
