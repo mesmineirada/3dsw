@@ -65,6 +65,15 @@ type FaceContour = {
   end: Vec3;
 };
 
+type PocketData = {
+  center: Vec3;
+  normal: Vec3;
+  tangent: Vec3;
+  width: number;
+  height: number;
+  depth: number;
+};
+
 type ModelObject = {
   id: string;
   name: string;
@@ -82,6 +91,7 @@ type ModelObject = {
   openFace?: { axis: 0 | 1 | 2; sign: 1 | -1 };
   visible: boolean;
   geometryData?: GeometryData;
+  pocketData?: PocketData;
 };
 
 const COLORS = ["#5fe1be", "#ffb86b", "#7aa7ff", "#f285b5", "#c5a7ff"];
@@ -621,7 +631,7 @@ export default function Home() {
       };
       const result = new Evaluator().evaluate(geometryForBrush(active), geometryForBrush(cutter), SUBTRACTION);
       const serialized = serializeWorldGeometry(result.geometry, result.matrixWorld);
-      const drilled: ModelObject = { id: uid(), name: `Furo · ${active.name}`, type: "boolean", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], dimensions: serialized.dimensions, color: active.color, visible: true, geometryData: serialized.data };
+      const drilled: ModelObject = { id: uid(), name: `Furo · ${active.name}`, type: "boolean", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], dimensions: serialized.dimensions, color: active.color, visible: true, geometryData: serialized.data, pocketData: { center: faceSelection.point, normal: faceSelection.normal, tangent: faceSelection.tangent, width: holeDiameter, height: holeDiameter, depth } };
       commit([...objectsRef.current.filter((item) => item.id !== active.id), drilled]);
       setSelectedIds([drilled.id]);
       setFaceSelection(null);
@@ -659,7 +669,7 @@ export default function Home() {
       };
       const result = new Evaluator().evaluate(geometryForBrush(active), geometryForBrush(cutter), SUBTRACTION);
       const serialized = serializeWorldGeometry(result.geometry, result.matrixWorld);
-      const carved: ModelObject = { id: uid(), name: kind === "hole" ? `Furo contornado · ${active.name}` : `Recorte contornado · ${active.name}`, type: "boolean", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], dimensions: serialized.dimensions, color: active.color, visible: true, geometryData: serialized.data };
+      const carved: ModelObject = { id: uid(), name: kind === "hole" ? `Furo contornado · ${active.name}` : `Recorte contornado · ${active.name}`, type: "boolean", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], dimensions: serialized.dimensions, color: active.color, visible: true, geometryData: serialized.data, pocketData: kind === "hole" ? { center: [round(frame.center.x), round(frame.center.y), round(frame.center.z)], normal: [round(frame.normal.x), round(frame.normal.y), round(frame.normal.z)], tangent: [round(frame.tangent.x), round(frame.tangent.y), round(frame.tangent.z)], width: frame.width, height: frame.height, depth: pocketDepth } : undefined };
       commit([...objectsRef.current.filter((item) => item.id !== active.id), carved]);
       setSelectedIds([carved.id]);
       setFaceContour(null);
@@ -1153,6 +1163,20 @@ export default function Home() {
       group.add(mesh, edges);
       scene.add(group);
       meshMapRef.current.set(model.id, group);
+    });
+    const previousPocket = scene.getObjectByName("pocket-interior");
+    if (previousPocket) scene.remove(previousPocket);
+    objects.filter((model) => model.pocketData).forEach((model) => {
+      const pocket = model.pocketData!;
+      const normal = new THREE.Vector3(...pocket.normal).normalize();
+      const tangent = new THREE.Vector3(...pocket.tangent).normalize();
+      const bitangent = normal.clone().cross(tangent).normalize();
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(0.5, pocket.width - 0.6), Math.max(0.5, pocket.height - 0.6)), new THREE.MeshStandardMaterial({ color: "#8e9299", roughness: 0.92, metalness: 0.02, side: THREE.DoubleSide }));
+      floor.name = "pocket-interior";
+      floor.position.set(...pocket.center).add(normal.clone().multiplyScalar(-pocket.depth + 0.08));
+      floor.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(tangent, bitangent, normal));
+      floor.renderOrder = 4;
+      scene.add(floor);
     });
     const previousHatch = scene.getObjectByName("face-hatch");
     if (previousHatch) scene.remove(previousHatch);
