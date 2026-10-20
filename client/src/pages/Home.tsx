@@ -454,7 +454,7 @@ export default function Home() {
   const [filletPercent, setFilletPercent] = useState(20);
   const [inspectInterior, setInspectInterior] = useState(false);
   const [faceMode, setFaceMode] = useState(false);
-  const [faceSelection, setFaceSelection] = useState<{ id: string; axis: 0 | 1 | 2; sign: 1 | -1; point: Vec3; normal: Vec3 } | null>(null);
+  const [faceSelection, setFaceSelection] = useState<{ id: string; axis: 0 | 1 | 2; sign: 1 | -1; point: Vec3; normal: Vec3; tangent: Vec3 } | null>(null);
   const [holeDiameter, setHoleDiameter] = useState(10);
   const [pathMode, setPathMode] = useState(false);
   const [pathPoints, setPathPoints] = useState<Vec3[]>([]);
@@ -1102,7 +1102,10 @@ export default function Home() {
         hatch.name = "face-hatch";
         hatch.position.set(...faceSelection.point);
         hatch.position.add(new THREE.Vector3(...faceSelection.normal).multiplyScalar(0.5));
-        hatch.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...faceSelection.normal));
+        const worldNormal = new THREE.Vector3(...faceSelection.normal).normalize();
+        const worldTangent = new THREE.Vector3(...faceSelection.tangent).normalize();
+        const worldBitangent = worldNormal.clone().cross(worldTangent).normalize();
+        hatch.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(worldTangent, worldBitangent, worldNormal));
         hatch.renderOrder = 10;
         scene.add(hatch);
       }
@@ -1136,7 +1139,20 @@ export default function Home() {
       return;
     }
     const hits = raycasterRef.current.intersectObjects([...meshMapRef.current.values()], true);
-    const hit = hits.find((entry) => entry.object.userData.modelId);
+    const hit = hits.find((entry) => entry.object instanceof THREE.Mesh && entry.object.userData.modelId && entry.face);
+    if (faceMode && hit?.face && hit.object instanceof THREE.Mesh) {
+      const localNormal = hit.face.normal.clone().normalize();
+      const normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
+      const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
+      const axis = (Math.abs(localNormal.x) > Math.abs(localNormal.y) && Math.abs(localNormal.x) > Math.abs(localNormal.z) ? 0 : Math.abs(localNormal.y) > Math.abs(localNormal.z) ? 1 : 2) as 0 | 1 | 2;
+      const sign = (localNormal.getComponent(axis) >= 0 ? 1 : -1) as 1 | -1;
+      const localTangent = axis === 0 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+      const worldTangent = localTangent.clone().transformDirection(hit.object.matrixWorld).normalize();
+      setFaceSelection({ id: hit.object.userData.modelId as string, axis, sign, point: [round(hit.point.x), round(hit.point.y), round(hit.point.z)], normal: [round(worldNormal.x), round(worldNormal.y), round(worldNormal.z)], tangent: [round(worldTangent.x), round(worldTangent.y), round(worldTangent.z)] });
+      setSelectedIds([hit.object.userData.modelId as string]);
+      toast.success(`Face selecionada · eixo ${["X", "Y", "Z"][axis]}`);
+      return;
+    }
     if (autoClick && hit) {
       const hostId = hit.object.userData.modelId as string;
       const normal = (hit.face?.normal.clone() ?? new THREE.Vector3(0, 1, 0))
@@ -1161,15 +1177,6 @@ export default function Home() {
       return;
     }
     const id = hit.object.userData.modelId as string;
-    if (faceMode && hit.face) {
-      const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
-      const axis = (Math.abs(normal.x) > Math.abs(normal.y) && Math.abs(normal.x) > Math.abs(normal.z) ? 0 : Math.abs(normal.y) > Math.abs(normal.z) ? 1 : 2) as 0 | 1 | 2;
-      const sign = (normal.getComponent(axis) >= 0 ? 1 : -1) as 1 | -1;
-      setFaceSelection({ id, axis, sign, point: [round(hit.point.x), round(hit.point.y), round(hit.point.z)], normal: [round(normal.x), round(normal.y), round(normal.z)] });
-      setSelectedIds([id]);
-      toast.success(`Face selecionada · eixo ${["X", "Y", "Z"][axis]}`);
-      return;
-    }
     setSelectedIds((current) => event.shiftKey ? current.includes(id) ? current.filter((item) => item !== id) : [...current, id] : [id]);
   };
 
